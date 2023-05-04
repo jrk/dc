@@ -1,0 +1,3679 @@
+<html>
+<head>
+<style>
+	* {
+		font-size: 100%;
+	}
+	html {
+	max-width: 900px;
+	font-family : Verdana, "Bitstream Vera Sans", "DejaVu Sans", Tahoma, Geneva, Arial, Sans-serif;
+	text-align: justify;
+	hyphens: auto;
+	margin: 0 auto;
+    padding-left: 2%;
+    padding-right: 3%;
+    color:#444;
+}
+
+pre {
+	background-color: #EEE;
+	border: solid black 1px;
+	padding: 1ch;
+	padding-left:2ch;
+	overflow: scroll;
+}
+
+code {
+/*	font-size: 110%;*/
+	font-weight: bold;
+	background-color: #e1e1e1;
+	border-radius: 0.5ch;
+	padding-left: 0.3ch;
+	padding-right: 0.3ch;
+}
+
+img {
+	border: 1px solid black;
+}
+
+h1 {
+	page-break-before: right;
+	font-weight: bold;
+	text-transform: uppercase;
+	font-size: 140%;
+	margin-top: 3ch;
+	margin-bottom: 0.5ch;
+}
+
+h2 {
+	margin-top: 3ch;
+}
+
+h3 {
+	color: #999;
+}
+.lined th {
+	background-color: #EEE;
+	
+
+}
+table.lined, .lined th, .lined td{
+   border: 1px solid black; 
+   border-collapse: collapse; 
+   border-spacing : 0x;
+   text-align: center;
+}
+
+table {
+	margin-top: 2ch;
+	width: 100%;
+}
+
+td pre {
+	vertical-align: top;
+}
+
+span.r{
+	color:red;
+	font-weight: bold; 
+}
+
+span.g{
+	color:green;
+	font-weight: bold; 
+}
+
+span.b{
+	color:blue;
+	font-weight: bold; 
+}
+
+span.h{
+	font-weight: bold; 
+}
+
+span.k{
+	font-weight: bold; 
+	color:orange;
+}
+
+div.t {
+
+	padding-left: 1ch;
+	border-left: solid 1px black;
+	margin-bottom: 2ch;
+}
+div.t:before {
+	content: "Trivia:";
+	white-space: nowrap;
+	text-decoration: underline;
+	font-weight: bold; 
+}
+
+  	a {
+      color:#444;
+      font-weight: bold;
+    }
+
+.arrow {
+	text-decoration: none;
+}    
+
+.center {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+</style>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=12.0, minimum-scale=1.0, user-scalable=yes">
+
+<title>Driving Compilers</title>
+</head>
+<body>
+	<a href="index.php">
+<h1 style="text-align: center; margin-bottom:4ch;padding-top: 1ch;">Driving Compilers</h1>
+</a>
+
+<p style="float:left;font-size: 90%;">
+By <b>Fabien Sanglard</b><br/>
+May 3rd, 2023<br/>
+</p>
+<p style="float:right; font-size: 90%;padding-bottom: 4ch;text-align: center;">
+<a href="https://github.com/fabiensanglard/dc">Mistake - Suggestion <br/> Feedback</a>
+</p>
+<div style="clear:both;">
+<h1>The Compiler Driver (1/5)</h1>
+<hr/>
+
+<div style="width:30%;float: right; margin-left: 2ch; margin-bottom: 2ch;">
+<table class="lined" style="width: 100%; text-align: center; margin-top: 0;">
+  <tr>
+<td colspan="3">driver<span class="r">*</span>
+        </td><td style="border-top-style: hidden; border-right-style: hidden;"></td>
+  </tr>
+
+  <tr>
+    <td>cpp</td>
+    <td>cc</td>
+    <td>ld</td>
+    <td>loader</td>
+  </tr>
+</table>
+</div>
+
+<p style="margin-top: 0;">
+Let's start by clearing a common misconception. When talking about compilers, the names of <code>clang</code>, <code>gcc</code>, or, on Windows, <code>CL.EXE</code> will come to mind. These are the names of CLIs (Command-Line Interface) used to build executables but invoking them doesn't directly call the compilers. These CLIs are in fact <b>compiler drivers</b>.
+</p>
+
+<p> Turning source code into an executable is a multiple step process. It can be viewed as a pipeline where stages communicate via artifact files. 
+
+In the case of <b>K&amp;R</b>, program <code>hello.c</code> requires three stages before the computer can greet you.
+</p>
+
+<img src="illu/driver.svg" loading=lazy width="210" height="297" style="width:100%; height: auto;" />
+
+<p>
+First the source file <code>hello.c</code> is preprocessed into a translation unit (TU) <code>hello.tu</code>. Then the TU is compiled into an object <code>hello.o</code>. Finally the linker turns the object into an executable. Since we did not give the driver a name for the output (<code>-o</code>), the file is named <code>a.out</code>.
+</p>
+
+<p>
+Compiler drivers are a convenient way to invoke all the tools auto-magically with a single command. We can run the driver in verbose mode (<code>-v</code>) or in dry-run mode (<code>-###</code>) to see what is happening behind the scene.
+</p>
+
+<pre><b>$</b> clang <span class="r">-v</span> hello.c
+clang <span class="r">-cc1</span> -o hello.o hello.c
+ld -o a.out hello.o
+</pre>
+
+<p>
+There are three important things to notice in this trace. 
+</p>
+
+<p>
+First, we see that <code>clang</code> is calling itself with the <code>-cc1</code> flag. Because it is convenient for distribution, the CLI contains both the driver and the compiler. By default the executable behaves like a driver but if invoked with the flag <code>-cc1</code>, it behaves like a compiler. Note that the linker (<code>ld</code>) is its own executable and we will see why later.
+</p>
+
+<p>
+Second, even though three stages were mentioned earlier, we only see two commands issued (one to the compiler <code>clang -cc1</code> and one to the linker <code>ld</code>). The <b>C</b> <b>P</b>re<b>p</b>rocessor (<code>cpp</code>) used to be a standalone program but it is no longer the case. Instead of loading a <code>.c</code> file to memory, write back a <code>.tu</code> to disk, only to load it to memory again, it is much more I/O efficient to pre-process inputs inside the compiler and compile right away.
+</p>
+
+
+<p>
+Lastly, and perhaps most importantly, we see the linker <code>ld</code> invocation. Wouldn't it be more efficient to include the linker in the driver, the same way <code>cpp</code> is embedded? No, because of two reasons.
+</p>
+<ol>
+<li>The compiler ingests one <code>.c</code> and outputs one <code>.o</code>. It has a low memory footprint. The linker on the other side, must use all the <code>.o</code> files at once to generate the executable. Keeping all these <code>.o</code> in memory would stress the system too much on big projects.</li> 
+<li>Compilers and linkers are complex machines. Keeping them separate adds an indirection layer so new versions of each stage can be deployed without impacting the other. It is thanks to this architecture that <code>clang</code> got a foot in the door by only providing compilation capabilities while leaving linking to GNU's <code>ld</code>. Likewise, the ELF specific <code>gold</code> linker and more recently LLVM's <code>lld</code> were drop-in replacement of GNU's <code>ld</code>.</li>
+</ol>
+
+
+
+<h2>Is <code>cc</code> a driver?</h2>
+<p>
+What is this <code>cc</code> CLI we saw in the introduction, mentioned in <b>K&amp;R</b>? It was the name of the command to invoke the compiler driver back in the '70s. These days, <code>cc</code> is no more. But usage of <code>cc</code> was widespread and since it is a convenient indirection layer, it is still used nowadays.
+</p>
+
+
+ Where does it point to? Let's drill down to find out!
+<pre><b>$</b> which cc
+/usr/bin/cc
+<b>$</b> readlink /usr/bin/cc
+/etc/alternatives/cc
+<b>$</b> readlink /etc/alternatives/cc
+/usr/bin/gcc</pre>
+<p>
+It's GNU <code>gcc</code>! What about the linker? What is <code>/usr/bin/ld</code>?<br/>
+</p>	
+<pre><b>$</b> readlink /usr/bin/ld
+x86_64-linux-gnu-ld
+<b>$</b> which x86_64-linux-gnu-ld
+/usr/bin/x86_64-linux-gnu-ld
+</pre>
+<p>
+It is GNU's linker! Alternatively, we could have found out using the <code>-v</code> flag.</p>
+<pre>
+<b>$</b> cc <span class="r">-v</span>
+gcc version 11.3.0 (Ubuntu 11.3.0-1ubuntu1~22.04)
+<b>$</b> ld <span class="r">-v</span>
+GNU ld (GNU Binutils for Ubuntu) 2.38
+</pre>
+
+
+
+
+<h2>GNU Binary Utilities (<code>binutils</code>)</h2>
+<p>
+Throughout these articles, we will use tools to explore the inputs and outputs in the compiler driver pipeline. The set of CLIs we will rely on is called GNU's Binary Utilities, a.k.a <code>binutils</code>. This collection is the cornerstone of the free software world. It is used by countless platforms, from Linux to BSD, not forgetting Darwin, Playstation 1 Dev Kit, Playstation 3 and 4 OS.
+</p>
+
+<pre>// List of binutils tools
+
+Name      |  Description
+--------------------------------------------------------------
+ld        |  The GNU linker.
+as        |  The GNU assembler.
+--------------------------------------------------------------
+addr2line |  Converts addresses into filenames and line numbers.
+ar        |  Creates, modifies and extracts from archives.
+c++filt   |  Filter to demangle encoded C++ symbols.
+dlltool   |  Creates files for building and using DLLs.
+gold      |  New, faster, ELF only linker, 5x faster than ld.
+gprof     |  Displays profiling information.
+ldd       |  List libraries imported by object file.
+nlmconv   |  Converts object code into an NLM.
+nm        |  Lists symbols from object files.
+objcopy   |  Copies and translates object files.
+objdump   |  Displays information from object files.
+ranlib    |  Generates an index to the contents of an archive.
+readelf   |  Displays information from any ELF format object file.
+size      |  Lists the section sizes of an object or archive file.
+strings   |  Lists printable strings from files.
+strip     |  Discards symbols.
+windmc    |  Windows compatible message compiler.
+windres   |  Compiler for Windows resource files. </pre>
+<p>
+Mastering the usage of <code>binutils</code> is a wise investment of a programmer's time. Not only is the knowledge highly reusable across the aforementioned systems, these tools are often the building block of new languages, including recent ones like <code>golang</code> and <code>rust</code>.
+</p>
+
+<p>Let's take the example of <code>hello-world</code> in golang.</p>
+<pre>package main
+import "fmt"
+
+func main() {
+    fmt.Println("Hello world")
+}</pre>
+
+<p>We can build it and find its entry address with <code>readelf</code> and its entry symbol with <code>nm</code>.</p>
+<pre>
+<b>$</b> go build hello-world.go
+<b>$</b> ./hello-world 
+hello world
+<b>$</b> <span class="r">readelf</span> -h hello-world | grep Entry
+  Entry point address:               0x6a680
+<b>$</b> <span class="r">nm</span> hello-world | grep 6a680
+000000000006a680 T _rt0_arm64_linux  	
+</pre>
+
+<p>We can also investigate at the dynamic libraries dependencies of <code>hello-world</code> and find out that go executable are statically linked.
+</p>
+
+<pre><b>$</b> ldd ./hello-world 
+    not a dynamic executable
+</pre>
+
+<div class="t"> Another good time investment of time is to learn how to bring up <code>man</code> and search it with <code>:/</code>. <code>man</code> is a treasure trove of information about executables such as <code>bintools</code>, syscalls and C functions. Manual pages are organized in categories indexed by a number.
+<pre><b>$</b> man <span class="r">1</span> nm   // Show <span class="r">CLI</span>     nm   documentation
+<b>$</b> man <span class="b">2</span> read // Show <span class="b">syscall</span> read documentation
+<b>$</b> man <span class="g">3</span> getc // Show <span class="g">libc</span>    getc documentation</pre>
+If you forget which one is which, you can request the manual about the manual.
+<pre><b>$</b> man man
+   1   Executable programs or shell commands
+   2   System calls (functions provided by the kernel)
+   3   Library calls (functions within program libraries)
+   4   Special files (usually found in /dev)
+   5   File formats and conventions, e.g. /etc/passwd
+   6   Games
+</pre>
+
+
+</div>
+
+
+
+
+<h2>Driver flags vs Compiler flags vs Linker flags?</h2>
+<p>
+Since a programmer mostly interacts with the driver, flags and parameters must be routed to the appropriate component. It is a good idea to identify which elements are the intended target.
+</p>
+<pre><b>$</b> clang <span class="g">-v</span> <span class="r">-lm</span> <span class="b">-std=c89</span> hello.c
+clang -cc1 <span class="b">-std=c89</span> -o hello.o hello.c
+ld -<span class="r">lm</span> -o a.out hello.o
+</pre>
+<p>
+In the previous trace, notice how <code>-v</code> is consumed by the compiler driver. It has no impact on the compiler or the linker. The driver detected that option <code>-std=c89</code> was intended for the compiler and routed it automatically. Likewise, the driver forwarded <code>-lm</code> to the linker.
+</p>
+<p>
+The driver will detect most commonly used parameters but you can also use a wrapper for a block to be blindly forwarded by the driver to the linker via <code>-Wl</code>.
+</p>
+<pre><b>$</b> clang -v <span class="r">-Wl,foo,bar</span> hello.c
+clang -cc1 -o hello.o hello.c
+ld -o a.out hello.o <span class="r">foo bar</span>
+</pre>
+
+<div class="t"> We use <code>clang</code> verbose output because they are easier to read. Here is what <code>gcc -v</code> looks like.<br/>
+</p>
+<pre>
+<b>$</b> gcc -v hello.c
+COLLECT_GCC_OPTIONS=...
+ as -v -EL -mabi=lp64 -o /tmp/ccUkKMFH.o /tmp/ccCKUy4c.s
+COMPILER_PATH==...
+COLLECT_GCC_OPTIONS=...
+ /usr/lib/gcc/aarch64-linux-gnu/11/collect2 /tmp/ccIPliNQ.o
+</pre>
+<p>
+It is a lot harder to read but we can still make out that an assembler step <code>as</code> took place, followed by a linking step via <code>collect2</code>. The call to the compiler via flag <code>-cc1</code> however is not featured.
+</p>
+</div>
+
+<h2>Driving a multi-file project</h2>
+<p>
+Let's take a look at what happens when a project is made of multiple C files.
+</p>
+
+<pre><b>$</b> clang -v <span class="r">hello</span>.c <span class="b">foo</span>.c <span class="g">bar</span>.c
+clang -cc1 <span class="r">hello</span>.c -o <span class="r">hello</span>.o     // Compile
+clang -cc1 <span class="b">foo</span>.c -o <span class="b">foo</span>.o         // Compile
+clang -cc1 <span class="g">bar</span>.c -o <span class="g">bar</span>.o         // Compile
+
+ld -o a.out hello.o foo.o bar.o    // Link
+</pre>
+
+<p>
+The driver turned three source files into three object files before linking them together into an executable. The verbose mode shows the compilation steps in sequence but it is important to understand they are in fact completely independent from each other. Looking at a dependency graph explains it better.
+</p>
+
+<img src="illu/multi_driver.svg" loading=lazy width="208" height="108" style="width:100%; height: auto;"/>
+<p>
+The driver ran all the steps sequentially but build systems leverage this translation unit isolation to drastically reduce their wall-time duration. They purposely avoid using the driver to spawn multiple compilers to turn source files into objects in parallel. These build systems also maintain a dependency graph to track which source files an object file depends on to re-compile only what has changed to dramatically speed up incremental compilation.
+</p>
+
+<h2>The linker bottleneck</h2>
+<p>
+The compilation stage scales linearly with the number of source files. The linking stage however does not. As you can see in the previous illustration, the linking stage depends on all object files which means that any file change, whether they are source or header will result in a full linking stage from scratch. Moreover, linking  cannot be parallelized.
+</p>
+<p>
+As a result, linkers are highly optimized. Apple, for example, leveraged multicores to <a href="https://developer.apple.com/videos/play/wwdc2022/110362/">improve the speed</a> of their linker, <code>ld64</code>. Techniques such as Incremental linking, allowing to re-use the result from the previous linking operations, are supported by <code>gold</code>, <code>lld</code>, and Microsoft's linker <code>LINK.EXE</code>.
+</p>
+
+<div class="t">
+Header files should not be compiled. The purpose of these files is to be included into the translation unit by the Preprocessor (described in the next chapter). If you compile a <code>.h</code>, the output will be a Precompiled Header. These files usually have a <code>.gch</code> extension.
+
+<pre><b>$</b> cat foo.h
+int add(int x, int y);
+int mul(int x, int y);	
+<b>$</b> clang foo.h -o foo.gch
+<b>$</b> file foo.gch
+GCC precompiled header (version 013) for C 
+</pre>
+</div>
+
+
+<h2>clang++ and g++</h2>
+<p>Drivers are able to guess many things to make a programmer's life easier but they have their limits. Let's take a look at what happens when we build the C++ version of HelloWorld, <code>hello.cc</code>.
+</p>
+<pre>
+#include &lt;iostream&gt;
+
+int main() {
+    std::cout << "Hello World!";
+    return 0;
+}	
+</pre>
+<p>
+Let's compile it with the same compiler driver command we have used thus far.
+</p>
+<pre>
+<b>$</b> clang -v hello.cc
+clang -cc1 -o hello.o foo.cc
+ld hello.o -o a.out
+<span class="r">hello.cc:(.text+0x11): undefined reference to `std::cout'
+.. 265 lines more lines of "Undefined symbols"</span> 
+</pre>	
+
+<p>
+It doesn't work. The compiler successfully generated an object but the linker failed to find the C++ symbols it needed to generate an executable. C++ source files require special care for which dedicated compiler drivers have been written. GNU GCC has <code>g++</code> and LLVM has <code>clang++</code>.
+</p>
+<pre>
+<b>$</b> clang++ -v hello.cc
+clang -cc1 <span class="r">-I/usr/include/c++/10</span> -o hello.o foo.cc
+ld hello.o <span class="r">-lc++</span> -o a.out
+<b>$</b> ./a.out
+Hello World!
+</pre>	
+
+
+
+
+<h2>Language detection and name mangling</h2>
+<p>
+Typically, a driver sets up the header search path for the pre-processor and let the linker know where to find libraries. But there is much more. Let's take the example of a rainbow project using four languages (C, C++, Objective-C, and Objective-C++) and compile it. Since we are only interested in generating the object files, we request it to the driver via flag <code>-c</code>.
+</p>
+
+<pre><b>$</b> clang -v <span class="r">-c</span> foo.c bar.cc toto.cpp baz.m qux.mm
+clang -cc1 -o hello-f4.o <span class="r">-x c</span> foo.c
+clang -cc1 -o hello-ea.o <span class="r">-x c++</span> bar.cc
+clang -cc1 -o hello-fa.o <span class="r">-x c++</span> too.cpp
+clang -cc1 -o hello-a1.o <span class="r">-x objective-c</span> baz.m
+clang -cc1 -o hello-12.o <span class="r">-x objective-c++</span> qux.mm
+</pre>
+
+<p>Notice how the driver provides the language of the source file. Isn't it stating the obvious? Not really. Sometimes, a file must be compiled in a different language than its extension indicates. Compiling the same project with a C++ driver, <code>clang++</code>, shows the difference.</p>
+
+<pre><b>$</b><b>$</b> clang++ -v -c foo.c bar.cc toto.cpp baz.m qux.mm
+clang -cc1 -o hello-f4.o -x <span class="r">c++</span> foo.c
+clang -cc1 -o hello-ea.o -x c++ bar.cc
+clang -cc1 -o hello-fa.o -x c++ too.cpp
+clang -cc1 -o hello-a1.o -x <span class="r">objective-c++</span> baz.m
+clang -cc1 -o hello-12.o -x objective-c++ qux.mm
+</pre>
+
+<p>
+Notice how the driver requested from the compiler to treat the C source file (<code>foo.c</code>) and Objective-C file (<code>baz.m</code>) to be respectively interpreted as C++ and Objective-C++.
+</p>
+
+
+
+
+
+
+<h2>clang-cl.exe</h2>
+<p>
+Let's finish the part about compiler drivers with a clever one called <code>clang-cl.exe</code>.
+</p>
+
+<p>
+ In Microsoft world, Visual Studio IDE backend uses a compiler driver named <code>CL.EXE</code> which flags are incompatible with those used by LLVM's <code>clang</code>. Sometimes the flags differences are minimal e.g: To enable all warnings, <code>/Wall</code> is needed in <code>CL.EXE</code> while <code>-Wall</code> is used in <code>clang</code>. But most of the time, flags are completely different.
+
+</p>
+<p>
+ To allow Visual Studio to use <code>clang</code> as its backend, LLVM team created <code>clang-cl.exe</code> driver which converts Microsoft's <code>CL.EXE</code> flags into LLVM ones. In the following example, Visual Studio requested RTTI support (<code>/GR-</code>) and made <code>char</code> unsigned (<code>/J</code>). See how <code>clang-cl.exe</code> converted these flags into something <code>clang -cc1</code> compiler could understand.
+<pre>
+<b>$</b> clang-cl.exe -v -c -o hello.o <span class="r">/GR-</span> <span class="b">/J</span> hello.c	
+clang <span class="r">-frtti</span> <span class="b">-funsigned-char</span> -o hello.o  hello.c
+</pre>
+
+
+
+<!-- BREAK -->
+
+<h1>The Preprocessor (2/5)</h1>
+<hr/>
+
+
+<div style="width:30%;float: right; margin-left: 2ch; margin-bottom: 2ch;">
+<table class="lined" style="width: 100%; text-align: center; margin-top: 0;">
+  <tr>
+   <td colspan="3">driver
+    </td><td style="border-top-style: hidden; border-right-style: hidden;"></td>
+  </tr>
+
+  <tr>
+    <td>cpp<span class="r">*</span></td>
+    <td>cc</td>
+    <td>ld</td>
+    <td>loader</td>
+  </tr>
+</table>
+</div>
+
+<p style="margin-top: 0;">
+In this chapter, we no longer focus on the compiler driver. Instead we take a look at the first stage of the compilation pipeline, the preprocessor.
+</p>
+<p>
+The goal of the preprocessor is to ingest one source file to resolve all its header files dependencies, resolve all macros, and output a translation unit that will be consumed by the compiler in the next stage. The preprocessor usually takes care of a source file (<code>.c</code>/<code>.cc</code>/<code>.cpp</code>/<code>.m</code>/<code>.mm</code>) but it is language agnostic. It can process anything, even text files, as long as it detects "directives" (commands starting with <code>#</code> character).
+</p>
+
+
+<h2>Is it <code>cpp</code> or <code>-E</code> ?</h2>
+
+<p>
+In the early days, the preprocessor was a separate executable called <code>cpp</code> (<b>C</b> <b>P</b>re<b>P</b>rocessor). Lucky us, developers have maintained it all these years, and we can still invoke it. 
+</p>
+<pre><b>$</b> <span class="r">cpp</span> hello.c -o hello.tu	
+</pre>
+<p>Just kidding. Using verbose mode shows that it is once again the compiler driver which uses <code>argv[0]</code> to detect it should invoke itself with <code>-E</code> parameter to behave like a preprocessor.
+</p>
+<pre>
+<b>$</b> <span class="r">cpp</span> -v hello.c -o hello.tu
+clang -cc1 <span class="r">-E</span> -o hello.tu hello.c  
+</pre>  
+
+<h2>How much pre-processing occurs?</h2>
+<p>
+A lot of work is done by <code>cpp</code>! So much in fact that the preprocessor is a bottleneck in big projects. Just to get an idea, see how the six lines in hello.c become a behemote 748 lines translation unit. 
+</p>
+<pre><b>$</b> <span class="r">wc -l</span> hello.c
+ <span class="r">6</span>  hello.c</pre>
+
+<pre><b>$</b> cpp hello.c > hello.tu
+<b>$</b> <span class="r">wc -l</span> hello.tu
+ <span class="r">748</span>  hello.tu</pre>
+
+<div class="t"> Including whole headers for each translation unit generation is a repeating task that is wasteful. Not only a huge volume of lines is involved, each of them are tokenized by <code>cpp</code>. C++ modules should solve this problem. They are not available yet but we should have them soon, right after hell freezes over.
+</div>
+
+<h2>Peeking inside a translation unit</h2>
+<p>Let's look inside a translation unit.
+</p>
+<pre><b>$</b> cpp hello.c > hello.tu
+<b>$</b> cat hello.tu
+<span class="r"># 328 "/usr/include/stdio.h" 3 4</span>
+extern int <span class="b">printf</span> (const char *__restrict __format, ...);
+... // many hundred more lines
+<span class="r"># 2 "hello.c" 2</span>
+main()
+{
+    <span class="b">printf</span>("hello, world\n");
+}
+
+</pre>
+
+<p> Each fragment of code is preceded by a comment <code># linenum filename flags</code> allowing to backtrack which file it came from. This allows the compiler to issue error messages with accurate line numbers.</p>
+
+
+<h2>Directives, the preprocessor language</h2>
+<p>
+All directives aimed at the preprocessor are prefixed with <code>#</code>. The names are usually self-explanatory. You can among many features include files, declare macro, perform conditional compilation.
+<div class="t">
+The preprocessor is regularly abused. It is so powerful that you can use it to have C program look like Java.
+  <pre>#include &lt;iostream&gt;
+#define System S s;s
+#define public
+#define static
+#define void int
+#define main(x) main()
+struct F{void println(char* s){std::cout << s << std::endl;}};
+struct S{F out;};
+
+public static void main(String[] args) {
+  System.out.println("Hello World!");
+}
+</pre>
+</div>
+ <p>
+ A handy feature of the pre-processor is the ability to receive command-line parameters to define values via the <code>-D</code> flag. Let's build a modified hello world.
+</p>
+<pre>// defined_return_code.c
+
+int main() {
+  return <span class="r">RETURN_VALUE</span>;
+}</pre>
+<p>Let's compile it while defining <code>RETURN_VALUE</code> with <code>-DRETURN_VALUE=3</code>
+<pre><b>$</b> clang <span class="r">-DRETURN_VALUE=3</span> defined_return_code.c
+<b>$</b> ./a.out ; echo $?
+<span class="r">3</span>
+</pre>
+
+
+<div class="t">
+  VLC is an immensely popular open source video player entirely written in C. It uses the pre-processor macros to implement <code>struct</code> inheritance.
+<pre>/* VLC_COMMON_MEMBERS : members common to all basic vlc objects */
+#define <span class="r">VLC_COMMON_MEMBERS</span>                                                  \
+const char *psz_object_type;                                                \
+                                                                            \
+    /* Messages header */                                                   \
+    char *psz_header;                                                       \
+    int  i_flags;                                                           \
+                                                                            \
+
+struct libvlc_int_t {
+  <span class="r">VLC_COMMON_MEMBERS</span>
+
+  /* Everything Else */
+}
+</pre>
+</div>
+
+<h2>Why headers are needed</h2>
+<p>When C was created, in the 70s, memory was severely limited. So much so that it constrained compilers to emit instructions after a single pass over a source file. To achieve one pass emission, the language designers pushed the constraint on the programmer. 
+</p>
+<p>All functions and variables must be declared before using them. Their definition could come later.</p>
+<pre>
+int mul(int x, int y);                 // This is a declaration
+int mul(int x, int y) <span class="r">{ return x * y;}</span> // This is a definition (and also a declaration)	
+
+extern int i;                          // This is a declaration
+int i = 0 ;                            // This is a definition (and also a declaration) 	
+
+class A;                               // This is a (forward) declaration
+class A {};                            // This is a definition (and also a declaration) 	
+</pre> 
+
+Let's see what happens when we disregard this constraint.
+</p>
+<pre>// var_err.c
+
+int main() {
+  return v;
+}
+
+int v = 0;
+</pre>
+
+<p> In this example, despite variable <code>v</code> being defined three lines later, the compiler will emit and error when <code>main</code> attempts to use it.</p>
+
+<pre>
+<b>$</b> clang var_err.c
+<span class="r">var_err.c:2:10: error: use of undeclared identifier 'v'</span>
+</pre> <p>
+In the case of function invocation, the compiler not only needs to know the return type but also the parameters a function expects (a.k.a its signature). It does not matter if the actual method body (definition) comes after as long as the parameters and their types are known when the callsite must be issued. 
+</p>
+
+<pre>// bad_fibonacci.c
+
+int fibonacci(int n) {
+  if (n <= 1)
+    return n;
+  return fibonacci(n - 1) + fibonacci(n - 2);
+}
+</pre>
+<pre>
+<b>$</b> clang -c bad_fibonacci.c
+<span class="r">bad_fibonacci.c:4:12: error: implicit declaration of function 'fibonacci' is invalid in C99</span>
+</pre>	
+<p><code>bad_fibonnaci</code> did not declare the function <code>fibonnaci</code> before using it which resulted in an error.</p>
+
+<pre>//  good_fibonacci.c
+
+<span class="r">int fibonacci(int n);</span>
+
+int fibonacci(int n) {
+  if (n <= 1)
+    return n;
+  return fib(n - 1) + fib(n - 2);
+}</pre>
+
+
+<p> Adding the definition allows the compiler to work in one pass.</p>
+
+<pre>
+<b>$</b> clang -c bad_fibonacci.c // It worked
+</pre>
+
+
+
+<h2>Things get complicated</h2>
+
+<p>The rule of definition before usage is simple but inconvenient to follow. Sometimes it is plain impossible when two functions call each other.
+</p>
+<pre>
+int <span class="r">function1</span>(int x) {
+  if (x) return <span class="b">function2</span>(2);
+  return 1;
+}
+
+int <span class="b">function2</span>(int x) {
+  if (x) return <span class="r">function1</span>(2);
+  return 2;
+}</pre>
+
+<p>The solution is to adopt a convention where definitions are put in header files and the declaration in the source files. This way, programmers are free to organize their source code as they please.</p>
+
+
+<table style="width: 100%;">
+
+<tr>
+<td>
+<pre>// foo.h
+
+int <span class="r">mul</span>(int x, int y);	
+int <span class="g">sub</span>(int x, int y);
+</pre>
+</td>
+<td>
+<pre>// bar.h
+
+int <span class="k">div</span>(int x, int y);	
+int <span class="b">add</span>(int x, int y);
+</pre>
+</td>
+</tr>
+
+<tr>
+<td>
+<pre>// foo.c
+
+#include "foo.h"
+#include "bar.h"
+
+int <span class="r">mul</span>(int x, int y) {
+  int c = x;
+  while(y--) // mul with add!
+    c = <span class="b">add</span>(1, c);
+  return c;  
+}
+
+int <span class="g">sub</span>(int x, int y) {
+  return x - y;
+}
+
+</pre>
+</td>
+<td>
+<pre>// bar.c
+
+#include "bar.h"
+#include "foo.h"
+
+int <span class="k">div</span>(int x, int y) {
+  int c = x;
+  while(y--) // div with sub!
+    x = <span class="g">sub</span>(x, 1);
+  return c;  
+}
+
+int <span class="b">add</span>(int x, int y) {
+  return x + y;	
+}
+
+</pre>
+</td>
+</tr>
+
+
+</table>
+
+<p>
+We can verify that this technique makes sense by looking at <code>cpp</code> outputs.
+<p>
+<pre>
+$ <span class="r">cpp</span> foo.c > foo.tu
+$ <span class="r">cpp</span> bar.c > bar.tu
+</pre>
+<p>
+Notice how all comments have been removed and the macros resolved. All that remains is pure code. And of course, all functions are declared before being used.  
+</p>
+<table style="width: 100%;">
+
+<tr>
+<td>
+<pre>// foo.tu
+
+int <span class="r">mul</span>(int x, int y);  
+int <span class="b">add</span>(int x, int y);
+
+int <span class="k">div</span>(int x, int y);  
+int <span class="g">sub</span>(int x, int y);
+
+int <span class="r">mul</span>(int x, int y) {
+  int c = x;
+  while(y--)
+    c = <span class="b">add</span>(1, c);
+  return c;
+}
+
+int <span class="b">add</span>(int x, int y) {
+  return x + y; 
+}
+</pre>
+</td>
+<td>
+<pre>// bar.tu
+
+int <span class="k">div</span>(int x, int y);
+int <span class="g">sub</span>(int x, int y);
+
+int <span class="r">mul</span>(int x, int y);  
+int <span class="b">add</span>(int x, int y);
+
+int <span class="k">div</span>(int x, int y) {
+  while(y--)
+    x = <span class="g">sub</span>(x, 1);
+  return c;
+}
+
+
+int <span class="g">sub</span>(int x, int y) {
+  return x - y;
+}
+</pre>
+</td>
+</tr>
+</table>
+
+
+
+
+<h2>Header guards</h2>
+<p>
+So far, it looks like the header system works well. Each source file becomes a translation unit with all declarations at the top. But this technique has a flaw if a header ends up being included more than once. Let's take the example of a mini game-engine project.
+</p>
+
+<table>
+<tr>
+<td>
+<pre>// engine.h
+
+struct World {
+}; 
+
+
+
+
+
+</pre>
+</td>
+<td>
+<pre>// ai.h
+ 
+#include "engine.h"
+
+
+
+void think(World& world);
+
+
+</pre>
+</td>
+<td>
+  <pre>// render.h
+
+#include "engine.h"
+
+
+
+void render(World& world);
+
+
+</pre>
+</td>
+</tr>
+
+
+<tr>
+<td>
+<pre>// engine.cc
+
+#include "engine.h"
+#include "render.h"
+#include "ai.h"
+
+void hostFrame(World& world) {
+  think(world);
+  render(world);
+}
+
+</pre>
+</td>
+
+
+<td>
+<pre>// ai.cc
+
+#include "ai.h"
+
+
+
+void think(World& world) {
+
+
+}
+
+</pre>
+</td>
+<td>
+  <pre>// render.cc
+
+#include "render.h"
+
+
+
+void render(World &worldv) {
+
+
+}
+  </pre>
+</td>
+
+</tr>
+</table>
+<p>If we attempt to generate each object file, the sub-systems <code>ia.cc</code> and <code>render.cc</code> compile fine but <code>engine.cc</code> throws an error.
+</p>
+
+<pre><b>$</b> clang -c -o render.o render.cc
+<b>$</b> clang -c -o ai.o ai.cc  
+<b>$</b> clang -c -o engine.o engine.cc
+In file included from engine.cc:4:
+In file included from ./ai.h:3:
+<span class="r">./engine.h:3:8: error: redefinition of 'World'
+struct World {
+       ^</span>
+./render.h:3:10: note: './engine.h' included multiple times, additional include site here
+#include "engine.h"
+         ^
+./ai.h:3:10: note: './engine.h' included multiple times, additional include site here
+#include "engine.h"
+         ^
+./engine.h:3:8: note: unguarded header; consider using #ifdef guards or #pragma once
+struct World {
+       ^
+1 error generated.
+</pre>
+
+<p>
+Inspecting the resulting TUs with <code>cpp</code> shows the problem.
+</p>
+<table>
+<tr>
+<td>
+<pre><b>$</b> cpp engine.cc
+
+<span class="r">struct World {
+};</span> 
+
+
+void render(World& world);
+
+
+<span class="r">struct World {
+};</span> 
+
+
+void think(World& world);
+
+
+void hostFrame(World& world) {
+  think(world);
+  render(world);
+}
+</pre>
+</td>
+<td>
+<pre><b>$</b> cpp ai.cc
+
+struct World {
+}; 
+
+
+
+
+
+
+
+
+
+void think(World& world);
+
+
+void think(World& world) {
+
+}
+
+</pre>
+</td>
+<td>
+<pre><b>$</b> cpp render.cc
+
+struct World {
+}; 
+
+
+void render(World& world);
+
+
+
+
+
+
+
+
+
+void render(World &world) {
+
+}
+
+</pre>
+</td>
+</tr>
+</table>
+
+<p><code>engine.cc</code> includes <code>engine.h</code>. However <code>engine.cc</code> also includes <code>ia.h</code> which in turns also includes <code>engine.h</code>. In the final <code>cpp</code>ed translation unit, <code>engine.h</code> is included twice and the struct <code>World</code> is declared twice.
+</p>
+
+<p>
+The solution to multiple import and import cycles is to use include guards or <code>pragma</code> guard. The difference between the two is that pragma is not part of the standard (although widely supported).
+</p>
+
+
+
+
+<table>
+<tr>
+<td>
+<pre>// engine.h
+<span class="r">#pragma once</span> // Pragma guard
+
+struct World {
+}; 
+
+
+
+
+
+</pre>
+</td>
+<td>
+<pre>// ai.h
+<span class="r">#ifndef AI.H</span> // Header guard
+<span class="r">#define AI.H</span> 
+#include "engine.h"
+
+
+
+void think(World& world);
+
+<span class="r">#endif </span> // AI.H
+</pre>
+</td>
+<td>
+  <pre>// render.h
+<span class="r">#ifndef RENDERER.H</span> // Header guard
+<span class="r">#define RENDERER.H</span>
+#include "engine.h"
+
+
+
+void render(World& world);
+<span class="r">
+#endif</span> // RENDERER.H
+</pre>
+</td>
+</tr>
+
+
+<tr>
+<td>
+<pre>// engine.cc
+
+#include "engine.h"
+#include "render.h"
+#include "ai.h"
+
+void hostFrame(World& world) {
+  think(world);
+  render(world);
+}
+
+</pre>
+</td>
+
+
+<td>
+<pre>// ai.cc
+
+#include "ai.h"
+
+
+
+void think(World& world) {
+
+
+}
+
+</pre>
+</td>
+<td>
+  <pre>// render.cc
+
+#include "render.h"
+
+
+
+void render(World &worldv) {
+
+
+}
+  </pre>
+</td>
+
+</tr>
+</table>
+
+<p>Since we now prevent muptile header inclusipon in the same TU, we can compile the whole project.</p>
+
+<pre><b>$</b> clang -c -o render.o render.cc
+<b>$</b> clang -c -o ai.o ai.cc  
+<b>$</b> clang -c -o engine.o engine.cc
+<b>$</b>
+</pre>
+
+
+<h2>Precompiled headers (PCH)</h2>
+<p>
+  As we alluded earlier while <code>wc</code>ing the outputs of <code>cpp</code>, the volume resulting from <code>#include</code> is huge. It is even worse in C++ where <code>hello.cc</code> 6 lines turned into 44,065 lines, a whopping 7,344% increase.
+</p> 
+
+<p>
+  It is a non-trivial amount of work to parse all this text, even with modern Threadripper CPUs. Build time can be reduced by using pre-compiled headers. 
+</p>
+<pre>// all_header.h
+
+#include "engine.h"
+#include "ai.h"
+#include "render.h"
+</pre>
+
+<p>Precompiled headers are super header containing all other headers and stored in binary form.
+</p>
+<pre><b>$</b> clang -cc1 all_header.h <span class="r">-emit-pch</span> -o <span class="r">all_header.pch</span>
+</pre>
+
+<p>With this approach, the source code does not need to <code>#include</code> anything anymore.
+
+<table>
+<tr>
+<td>
+<pre>// engine.cc
+
+void hostFrame(World& world) {
+  think(world);
+  render(world);
+}
+
+</pre>
+</td>
+
+
+<td>
+<pre>// ai.cc
+
+void think(World& world) {
+
+
+}
+
+</pre>
+</td>
+<td>
+  <pre>// render.cc<
+
+void render(World &world) {
+
+
+}
+  </pre>
+</td>
+
+</tr>
+</table>	
+
+<p>Compiling requires to give the path to the precompiled header to the driver.
+</p>
+
+<pre><b>$</b> clang -v <span class="r">-include-pch all_header.pch</span> -c render.cc ai.cc engine.cc
+</pre>
+
+
+
+
+
+<h2>Header Search Path</h2>
+<p>
+  By default, the preprocessor first attempts to locate the target of <code>#include</code> directives in the same directory as the source file. If that fails, the preprocessor goes though the "header search path". Let's take the example of a simple <code>hello_world.c</code> project which uses an include for the string value to <code>printf</code>
+</p>
+
+<table>
+<tr>
+<td>
+<pre>// hello_with_include.c
+
+#include "stdio.h"
+#include "hello_with_include.h"	
+
+int main() {
+  printf(MESSAGE);
+  return 0;
+}
+</pre>
+</td>
+
+
+<td>
+<pre>// include_folder/hello_with_include.h
+
+#define MESSAGE "Hello World!\n"
+
+
+
+
+
+
+</pre>
+</td>
+
+
+</tr>
+</table>
+
+<p>If the header is not in the same directory, it cannot be found by the pre-processor. We get an error.</p>
+<pre><b>$</b> find .
+hello_with_include.c	
+<span class="h">include_folder/</span>hello_with_include.h
+<b>$</b> clang hello_with_include.c
+<span class="r">hello_with_include.c:2:10: fatal error: 'hello_with_include.h' file not found
+#include "hello_with_include.h" 
+         ^~~~~~~~~~~~~~~~~~~~~~</span>
+</pre>
+
+<p>
+  The algorithm to lookup the header search path is quite elaborated but well described on GNU gcc <a href="https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html">cpp documentation</a> page. To fix our example, we can add a directory to the path to search via <code>-I</code>.
+</p>
+<pre><b>$</b> clang <span class="r">-Iinclude_folder</span> hello_with_include.c
+</pre>
+
+<p>
+  There are many more flags that can be passed to the driver to impact the header search path. Among them, <code>-sysroot</code>, <code>-iquote</code>, <code>-isystem</code> which impacts vary whether an <code>#include</code> directive uses quotes <code>"</code> or angled brackets (<code>&lt;</code> <code>&gt;</code>). There is even a <code>-sysroot</code> parameter which defines a whole toolchain featuring both the header search path and the library linker search path.
+</p>  
+
+
+
+
+<h3>Headers provided by the compiler toolchain</h3>
+<p>Some headers are not provided via flags. These come with the compiler and are automatically added to the header search path. It is the case of <code>stddef.h</code> which provides among other things <code>size_t</code> definition and the <code>NULL</code> macro.
+
+</p>
+
+<pre><b>$</b> cat someheader.h
+#include "stddef.h"
+<b>$</b> gcc <span class="r">-E</span> someheader.h
+<span class="r"># 1 "/usr/lib/gcc/aarch64-linux-gnu/11/include/stddef.h" 1 3 4</span>
+<b>$</b> clang <span class="r">-E</span> someheader.h
+<span class="r"># 1 "/usr/lib/llvm-14/lib/clang/14.0.0/include/stddef.h" 1 3</span>
+<b>$</b></pre>
+
+
+
+
+
+<h2>Header dependency graph and build systems</h2>
+<p>Build system compile source files over and over again. An obvious optimization is to re-use outputs from previous runs if they did not change.
+  But because of the header search path and the undeclared preprocessor dependencies, it is hard to build a reliable dependency graph.
+</p>
+<p>
+  This problem can be solved by asking the pre-processor which files were accessed while preprocessing. With <code>clang</code> for example, the flag  <code>-MD</code> requests the preprocessor to output the dependency required to generate a translation unit. A further option <code><code>-MF</code></code> instructs to write the output to a file. Note that these options can be fed to the compiler driver which will forward them to the pre-processor.
+</p>
+<pre>$ cat hello.c
+#include &lt;stdio.h&gt;
+
+int main() {
+  printf("Hello, world!\n");
+  return 0;
+}
+$ clang <span class="r">-MD -MF hello.d</span> -c -o hello.o hello.c
+$ cat hello.d 
+hello.o: hello.c /usr/include/stdio.h /usr/include/_types.h 
+  /usr/include/sys/_types.h /usr/include/sys/cdefs.h 
+  /usr/include/machine/_types.h /usr/include/i386/_types.h 
+  /usr/include/secure/_stdio.h /usr/include/secure/_common.h
+</pre>
+
+<div class="t"> The notoriously blazing fast build system <code>ninja</code> leverages these dependencies outputs to create a dependency graph. After the first compilation, the dependency graph is parsed. On each subsequent build, file modification timestamps it checked to re-build only what has changed.
+</div>
+
+
+<h2>Header discipline</h2>
+<p><code>cpp</code> will not warn programmers if they neglect to keep their headers tidy. As much as possible, try to:
+<ul>
+<li>Avoid transitive dependencies.</li>
+<li>Not expose implementation details.</li>
+</ul>
+</p>
+<p>The following header system exhibits the problems when these two rules are not followed.</p>
+
+<table>
+  <tr>
+    <td>
+
+    </td>
+    <td>
+<pre>// a.h
+
+#prama once
+
+
+
+const char* getName();
+</pre>
+    </td>
+    <td>
+<pre>// b.h
+
+#prama once
+
+<span class="r">#include &lt;string.h&gt;</span>
+
+int getLength(const char*);
+</pre>
+    </td>    
+  </tr>
+
+    <tr>
+    <td>
+<pre>// main.c
+
+#include "a.h"
+#include "b.h"  
+
+int main() {
+  char* name = getName();
+  int length = getLength(name);
+  printf("%s is %d long\n", name, length);
+  return 0;
+} 
+</pre>
+    </td>
+    <td>
+<pre>// a.c  
+
+
+
+const char* name = "Fab";
+
+
+
+const char* getName() {
+  return name;
+}  
+</pre>
+    </td>
+    <td>
+<pre>// b.c  
+
+
+
+
+
+
+
+int getLength(const char* string) {
+  returb strlen(string);
+} 
+</pre>
+    </td>    
+  </tr>
+
+</table>
+
+
+
+
+
+
+
+<p>Header <code>b.h</code> includes <code>string.h</code> but it is wasteful. All source files including <code>b.h</code> now have to also include <code>string.h</code>. Moreover, the fact that <code>b.c</code> uses <code>strlen</code> is an implementation detail. Let's refactor this line.</p>
+
+
+
+<table>
+  <tr>
+    <td>
+
+    </td>
+    <td>
+<pre>// a.h
+
+#prama once
+
+
+
+const char* getName();
+</pre>
+    </td>
+    <td>
+<pre>// b.h
+
+#prama once
+
+
+
+int getLength(const char*);
+</pre>
+    </td>    
+  </tr>
+
+    <tr>
+    <td>
+<pre>// main.c
+
+#include "a.h"
+#include "b.h"  
+
+int main() {
+  char* name = getName();
+  int length = getLength(name);
+  printf("%s is %d long\n", name, length);
+  return 0;
+} 
+</pre>
+    </td>
+    <td>
+<pre>// a.c  
+
+
+
+const char* name = "Fab";
+
+
+
+const char* getName() {
+  return name;
+}  
+</pre>
+    </td>
+    <td>
+<pre>// b.c  
+
+
+
+<span class="r">#include &lt;string.h&gt;</span>
+
+
+
+int getLength(const char* string) {
+  returb strlen(string);
+} 
+</pre>
+    </td>    
+  </tr>
+
+</table>
+
+
+<p>Moving <code>string.h</code> include from the <code>.h</code> file to the <code>.c</code> file keeps the implementation details private. Let's see what happens when we try to compile.</p>
+
+<pre><b>$</b> clang -o main main.c a.c b.c
+<span class="r">main.c:2:3: warning: implicit declaration of function 'printf' is invalid in C99 [-Wimplicit-function-declaration]
+1 warning generated.
+/usr/bin/ld: /tmp/main-3866ce.o: in function `main':
+main.c:(.text+0x20): undefined reference to `printf'  
+</pre>
+
+<p>The problem is that <code>main.c</code> has a transitive dependency on <code>string.h</code>. The program compiled because <code>b.h</code> included it. As soon as it was removed, the translation unit originating from <code>main.c</code>  fails to compile. The solution is to make all source files self-reliant without  transitive header dependencies. 
+
+<table>
+  <tr>
+    <td>
+
+    </td>
+    <td>
+<pre>// a.h
+
+#prama once
+
+
+
+const char* getName();
+</pre>
+    </td>
+    <td>
+<pre>// b.h
+
+#prama once
+
+
+
+int getLength(const char*);
+</pre>
+    </td>    
+  </tr>
+
+    <tr>
+    <td>
+<pre>// main.c
+
+#include "a.h"
+#include "b.h"  
+<span class="r">#include &lt;string.h&gt;</span>
+
+int main() {
+  char* name = getName();
+  int length = getLength(name);
+  printf("%s is %d long\n", name, length);
+  return 0;
+} 
+</pre>
+    </td>
+    <td>
+<pre>// a.c  
+
+
+
+const char* name = "Fab";
+
+
+
+
+const char* getName() {
+  return name;
+}  
+</pre>
+    </td>
+    <td>
+<pre>// b.c  
+
+
+
+<span class="r">#include &lt;string.h&gt;</span>
+
+
+
+
+int getLength(const char* string) {
+  returb strlen(string);
+} 
+</pre>
+    </td>    
+  </tr>
+
+</table>
+
+
+<h2>Know your libraries</h2>
+<p>Modern IDEs automatically suggest a header to include if it is missing. This is a two edged sword because the project may become tied to a specific library without the programmer noticing. There are many C libraries (libc, STL versions, POSIX, Windows ...) and it is a good idea to know which header belongs to what.
+</p>
+ 
+<p>It is especially important if you are developing cross-platform. Header <code> unistd.h</code> for example, which defines POSIX functions, does not exist on Windows.
+</p>
+
+<!-- BREAK -->
+
+	<h1>The Compiler (3/5)</h1>
+	<hr/>
+
+
+  <div style="width:30%;float: right; margin-left: 2ch; margin-bottom: 2ch;">
+<table class="lined" style="width: 100%; text-align: center; margin-top: 0;">
+  <tr>
+   <td colspan="3">driver
+    </td><td style="border-top-style: hidden; border-right-style: hidden;"></td>
+  </tr>
+
+  <tr>
+    <td>cpp</td>
+    <td>cc<span class="r">*</span></td>
+    <td>ld</td>
+    <td>loader</td>
+  </tr>
+</table>
+</div>
+
+
+
+<p style="margin-top: 0;">
+	The compiler stage is the most complicated element in the pipeline. Because of the purpose of these articles, this is going to be the simplest part. If you want to learn how compilers work inside out, refer to the <a href="https://amzn.to/3JlbOZx">Dragon book</a>.
+	</p> 
+
+<h2>Compiler big picture</h2>
+<p>The goal of the compiler is to open a translation unit, parse it, optimize it and output an object file (except in the case of LTO which is discussed later). These object files are also sometimes called relocatable.
+</p>
+
+<p>All compilers are structured the same way. They have a Frontend which ingest the text and transform it into an Intermediate Representation (IR). The IR is usually modified by optimizers before being consumed by the Backend which is in charge of generating machine specific instructions and package them into an object file format container.
+	</p>
+<img class="center" style="width:75%; margin-bottom: 2ch; border:0;" src="illu/SimpleCompiler.svg"/>	
+
+<div class="t"> Clang is a frontend which generates an IR consumed by LLVM backend. Its well documented and kinda human readable IR format has opened the door to many tools. Among them is Rust's compiler, <code>rustc</code>, which is a LLVM frontend in charge of generating LLVM IR.<br/><br/>
+	<img class="center" style="border:0;width:75%;" src="illu/LLVMCompiler1.svg"/>	
+</div>
+
+
+<h2>Output format</h2>
+<p>The input format, the translation unit, was studied in the previous section about the preprocessor. Let's focus on what the compiler has to output. The format is given to us via the tool <code>file</code> after requesting the driver to output a relocatable file instead of an executable.</p>
+
+<pre>// mult.c
+
+int mul(int x, int y);
+
+int pow(int x) { return mul(x, x) ; }
+</pre>
+
+<p>Note how using <code>-c</code> flag simply made the driver call itself in compiler mode (<code>-cc1</code>) and skip the linker stage.
+</p>
+
+<pre><b>$</b> clang -v <span class="r">-c</span> mult.c -o mult.o
+clang -cc1 mult.c -o mult.o
+<b>$</b> file mult.o
+<span class="r">mult.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV), not stripped</span>
+</pre>
+
+<p>The relocatable files are commonly called "object" file and use a <code>.o</code> extension. Let's use <code>binutils</code>'s <code>readelf</code> to peek inside it.
+</p>
+
+<pre><b>$</b> readelf <span class="r">-S</span> -W mult.o
+There are 9 section headers, starting at offset 0x1d8:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .strtab           STRTAB          0000000000000000 0001b1 000071 00      0   0  1
+  [ 2] .text             PROGBITS        0000000000000000 000040 000028 00  AX  0   0  4
+  [ 3] .rela.text        RELA            0000000000000000 000180 000018 18   I  9   2  8
+  [ 4] .comment          PROGBITS        0000000000000000 000068 000026 01  MS  0   0  1
+  [ 5] .note.GNU-stack   PROGBITS        0000000000000000 00008e 000000 00      0   0  1
+  [ 6] .eh_frame         PROGBITS        0000000000000000 000090 000030 00   A  0   0  8
+  [ 7] .rela.eh_frame    RELA            0000000000000000 000198 000018 18   I  9   6  8
+  [ 8] .llvm_addrsig     LOOS+0xfff4c03  0000000000000000 0001b0 000001 00   E  9   0  1
+  [ 9] .symtab           SYMTAB          0000000000000000 0000c0 0000c0 18      1   6  8
+</pre>
+
+<p>The output is organized in named sections. The most important one to know is <code>.text</code>, where the functions instructions are stored. We can experiment with the source code to see the two other most common sections.
+</p>
+
+
+<pre>// manySymbols.c
+
+int myInitializedVar = 1;
+int myUnitializedVar;
+
+int add(int x, int y);
+
+int mult(int x) { return add(x, x) ; }
+</pre>
+
+<p>Let's compile to a relocatable object and peek inside again.</p>
+
+<pre><b>$</b> clang -c -o manySymbols.o manySymbols.c
+<b>$</b> readelf -S -W manySymbols.o
+There are 12 section headers, starting at offset 0x2c0:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .strtab           STRTAB          0000000000000000 000219 0000a5 00      0   0  1
+  [ 2] .text             PROGBITS        0000000000000000 000040 000028 00  AX  0   0  4
+  [ 3] .rela.text        RELA            0000000000000000 0001e8 000018 18   I 11   2  8
+  [ 4] <span class="r">.data</span>             PROGBITS        0000000000000000 000068 000004 00  WA  0   0  4
+  [ 5] <span class="r">.bss</span>              NOBITS          0000000000000000 00006c 000004 00  WA  0   0  4
+  [ 6] .comment          PROGBITS        0000000000000000 00006c 000026 01  MS  0   0  1
+  [ 7] .note.GNU-stack   PROGBITS        0000000000000000 000092 000000 00      0   0  1
+  [ 8] .eh_frame         PROGBITS        0000000000000000 000098 000030 00   A  0   0  8
+  [ 9] .rela.eh_frame    RELA            0000000000000000 000200 000018 18   I 11   8  8
+  [10] .llvm_addrsig     LOOS+0xfff4c03  0000000000000000 000218 000001 00   E 11   0  1
+  [11] .symtab           SYMTAB          0000000000000000 0000c8 000120 18      1   8  8</pre>
+
+
+<p>The addition of an initialized variable made the compiler use a <code>.data</code> section. The addition of an uninitialized variable made the compiler use a <code>.bss</code> section.</p>
+
+
+
+
+
+
+
+
+<h2>Symbols</h2>
+<p>A relocatable lists both export symbols and import symbols. These lists are in the <code>.symbtab</code> sections, which refers to strings in the <code>.strtab</code> section.
+</p> 
+
+
+<pre><b>$</b> // importExport.c
+
+extern const int myConstant;
+extern void foo(int x);
+
+int myVar1;
+int myVar2;
+void bar() { 
+	foo(myConstant); 
+}
+</pre>
+
+<p>Let's look at the exported and imported symbols with <code>nm</code>.</p>
+
+<pre><b>$</b> clang -c  mult.c -o mult.o
+<b>$</b> <span class="r">nm</span> mult.o
+0000000000000000 T bar
+                 U foo
+                 U myConstant
+0000000000000000 B myVar1
+0000000000000004 B myVar2
+</pre>
+
+<p>As expected we find three symbols exported, a function <code>bar</code> (with an offset in <code>.text</code> of <code>0x0</code>) and two uninitialized variables in the <code>bss</code> section. Variable <code>myVar1</code> is at offset <code>0x0</code> and <code>myVar2</code> is four bytes further at offset <code>0x4</code>.
+</p>
+
+<p>
+
+ We also see two undefined (a.k.a imported) symbols, <code>foo</code> and <code>myConstant</code> with the <code>U</code> type. These obviously don't have an offset. The complete list of <code>nm</code> letter codes and their meaning is as follows.
+	</p>
+
+	<pre>A  A global, absolute symbol.
+B  A global "bss" (uninitialized data) symbol.
+C  A "common" symbol, representing uninitialized data.
+D  A global symbol naming initialized data.
+N  A debugger symbol.
+R  A read-only data symbol.
+T  A global text symbol.
+U  An undefined symbol.
+V  A weak object.
+W  A weak reference.
+a  A local absolute symbol.
+b  A local "bss" (uninitialized data) symbol.
+d  A local data symbol.
+r  A local read-only data symbol.
+t  A local text symbol.
+v  A weak object that is undefined.
+w  A weak symbol that is undefined.
+?  None of the above.</pre>
+
+<p>We can write a rainbow source file which hits as many types of symbols as possible when compiled to object.</p>
+
+<pre>extern int undVar;                 // Should be U  
+int defVar;                        // Should be B
+
+extern const int undConst;         // Should be U
+const int defConst = 1;            // Should be R
+
+extern int undInitVar;             // Should be U
+int defInitVar = 1;                // Should be D
+
+static int staticVar;              // Should be b
+static int staticInitVar=1;        // Should be d
+static const int staticConstVar=1; // Should be r
+
+static void staticFun(int x) {}    // Should be t
+
+extern void foo(int x);            // Should be U
+
+void bar(int x) {                  // Should be T 
+  foo(undVar);
+  staticFun(undConst);
+}</pre>
+
+<p>Since we are using an OS with two great compilers available, we can compile with both <code>gcc</code> and <code>clang</code> to see the differences.</p>
+
+<pre><b>$</b> <span class="r">clang</span> -c  rainbow.c -o rainbow.o && nm rainbow.o
+0000000000000000 T bar
+0000000000000000 R defConst
+0000000000000000 D defInitVar
+0000000000000000 B defVar
+                 U foo
+000000000000003c t staticFun
+                 U undConst
+                 U undVar</pre>
+
+<pre><b>$</b> <span class="r">gcc</span> -c  rainbow.c -o rainbow.o && nm rainbow.o
+0000000000000014 T bar
+0000000000000000 R defConst
+0000000000000000 D defInitVar
+0000000000000000 B defVar
+                 U foo
+0000000000000004 r staticConstVar
+0000000000000000 t staticFun
+0000000000000004 d staticInitVar
+0000000000000004 b staticVar
+                 U undConst
+                 U undVar
+</pre>
+
+<h2>Global symbol / Local symbol</h2>
+<p><code>nm</code> outputs differentiate between local and global symbols. A local symbol is only visible within a relocatable unit. In C, this is achieved with a <code>static</code> storage class specifier.
+</p>
+
+<p>Global are visible to all relocatable units. It is something that is revisited in the linker article.</p> 
+
+<h2>Weak and strong symbols</h2> 
+<p><code>nm</code> output also differentiates between "strong" symbols (the default) and weak symbols.</p>
+<p>A weak symbol can be overwritten by a strong symbol. 
+	</p>
+
+<table>
+  <tr>
+    <td>
+<pre> // weak.c
+
+#include "stdio.h"
+
+extern int getNumber();
+
+int main() {
+  printf("%d\n", <span class="r">getNumber()</span>);
+}     
+</pre> 
+    </td>
+    <td>
+<pre>// number1.c
+
+
+
+
+
+int <span class="r">getNumber</span>() {
+  return 1;
+}  
+</pre>      
+    </td>
+    <td>
+<pre>// number2.c
+
+
+
+
+
+int <span class="r">getNumber</span>() {
+  return 2;
+}       
+</pre>      
+    </td>    
+  </tr>
+</table>
+
+<p>By default all symbols are strong. In this example, the linker fails because it does not know which <code>getNumber</code> to pick. when it is used in <code>weak.c</code>.</p>
+
+<pre><b>$</b> clang -o weak weak.c number1.c number2.c
+  /usr/bin/ld: number2.o: in function `getNumber':
+number2.c:(.text+0x0): <span class="r">multiple definition of `getNumber')</span>; number1.o:number1.c:(.text+0x0): first defined here
+clang: error: linker command failed with exit code 1 (use -v to see invocation
+</pre>
+
+
+<p>If we declare one of the duplicate functions as <code>weak</code>, the program compiles and run normally, regardless of the compilation and linking order.</p>
+
+<table>
+  <tr>
+    <td>
+<pre> // weak.c
+
+#include "stdio.h"
+
+extern int getNumber();
+
+int main() {
+  printf("%d\n", getNumber());
+}     
+</pre> 
+    </td>
+    <td>
+<pre>// number1.c
+
+
+
+
+
+<span class="r">__attribute__((weak))</span> int getNumber() {
+  return 1;
+}  
+</pre>      
+    </td>
+    <td>
+<pre>// number2.c
+
+
+
+
+
+int getNumber() {
+  return <span class="g">2</span>;
+}       
+</pre>      
+    </td>    
+  </tr>
+</table>
+
+<pre><b>$</b> clang -o weak weak.c number1.c number2.c
+<b>$</b>./weak
+<span class="g">2</span>
+<b>$</b> clang -o weak weak.c number2.c number1.c
+<b>$</b>./weak
+<span class="g">2</span>
+</pre>
+
+
+<h2>Weak symbols and libc</h2> 
+<p>Most <code>libc</code> implementations declare their methods "weak" so users can intercept them. This is not always as convenient as it seems. Let's look at how to intercept <code>malloc</code>.</p>
+<pre>// mymalloc.c
+
+#define _GNU_SOURCE // Could have been defined with -D on command-line
+
+#include "stddef.h"
+#include "dlfcn.h"
+#include "stdio.h"
+#include "stdlib.h"
+#include "stdio.h"
+#include "dlfcn.h"
+
+
+void* malloc(size_t sz) {
+  void *(*libc_malloc)(size_t) = dlsym(RTLD_NEXT, "malloc");
+  printf("malloced %zu bytes\n", sz);
+  return libc_malloc(sz);
+}
+
+int main() {
+  char* x = malloc(100);
+  return 0;
+}
+</pre>
+
+<p>This program will enter an infinite loop until it segfaults. This is because <code>dlsym</code> calls <code>malloc</code>.
+
+<pre><b>$</b> clang mymalloc.
+<b>$</b> ./a.out
+<span class="r">Segmentation fault (core dumped)</span>
+</pre>
+
+<p>For such cases, GNU's <code>libc</code> used to provide special hooks such as <code>__malloc_hook</code>...but they became deprecated. Now the best way is to MITM via the loader and <code>LD_PRELOAD</code>.</p>
+
+<pre> // mtrace.c
+
+#include &lt;stdio.h&gt;
+#include &lt;dlfcn.h&gt;
+
+static void* (*real_malloc)(size_t) = nullptr;
+
+void *malloc(size_t size) {
+    if(!real_malloc)  {
+      real_malloc = dlsym(RTLD_NEXT, "malloc");
+    }
+
+    printf("malloc(%d) = ", size);
+    return real_malloc(size);
+}
+
+</pre>
+
+<pre><b>$</b> clang -shared -fPIC -D_GNU_SOURCE -o mtrace.so mtrace.c
+$ LD_PRELOAD=./mtrace.so ls
+malloc(472) = 0xaaab24e4b2a0
+malloc(120) = 0xaaab24e4b480
+malloc(1024) = 0xaaab24e4b500
+malloc(5) = 0xaaab24e4b910
+...
+<b>$</b></pre>
+
+<div class="t"> Weak symbols are also paramount for C++ and especially the STL (see below).</div>
+
+
+
+
+
+
+
+
+
+
+
+
+<h2>How C++ template leverage weak symbols</h2>
+  <p>There is one further usage of weak symbols. When using STL templates, each relocatable receives a copy of instructions and symbols when instantiation is involved. As a result, two translation units using <code>vector&lt;int&gt;</code> end up with the same symbols.
+  </p>
+  <table>
+    <tr>
+      <td>
+  <pre>// c++foo.cc
+
+#include &lt;vector&gt;
+
+void foo() {
+  auto v = std::vector&lt;int&gt;();
+}
+  </pre>
+     </td>
+      <td>
+  <pre>// c++bar.cc
+
+#include &lt;vector&gt;
+
+void bar() {
+  auto v = std::vector&lt;int&gt;();
+}
+
+</pre>
+     </td>
+   </tr>
+  </table>
+  <p>
+<code>nm</code> confirms the duplicates in both object files.
+  </p>
+  <pre><b>$</b> clang -c -o c++foo.o c++foo.cc
+<b>$</b> nm c++foo.o | grep -E 'vector|bar|foo'
+0000000000000000 T foo()
+0000000000000000 <span class="r">W</span> std::vector&lt;int, std::allocator&lt;int&gt; &gt;::vector()
+0000000000000000 <span class="r">W</span> std::vector&lt;int, std::allocator&lt;int&gt; &gt;::~vector()</pre>
+  <pre><b>$</b> clang -c -o c++bar.o c++bar.cc
+<b>$</b> nm c++bar.o | grep -E 'vector|bar|foo'
+0000000000000000 T bar()
+0000000000000000 <span class="r">W</span> std::vector&lt;int, std::allocator&lt;int&gt; &gt;::vector()
+0000000000000000 <span class="r">W</span> std::vector&lt;int, std::allocator&lt;int&gt; &gt;::~vector()
+  </pre>
+
+  <p>When the linker sees several symbols it favors the "strong" one. However if only "weak" ones are available it picks up any of them without throwing an error. This behavior can be exposed in an example using template and <code>-D</code>.</p>
+
+
+
+
+
+<table>
+    <tr>
+      <td>
+  <pre>// weak_main.cc
+
+const char* foo();
+const char* bar();
+#include "stdio.h"
+
+int main() {
+  printf("%s\n", foo());
+  printf("%s\n", bar());
+}
+
+  </pre>
+     </td>
+        <td>
+  <pre>// <span class="b">c++foo.cc</span>
+
+
+#define NAME "foo"
+#include "template.h"
+
+const har* foo() {
+  Name<const char*> name;
+  return name.get();
+}
+
+
+</pre>
+     </td>
+
+      <td>
+  <pre>// <span class="g">c++bar.cc</span>
+
+
+#define NAME "bar"
+#include "template.h"
+
+const char* bar() {
+  Name<const char*> name;
+  return name.get();
+}
+
+
+</pre>
+     </td>
+     <td>
+<pre> // template.h
+
+
+template&lt;typename T&gt; struct Name {
+  T get() const {
+    return T{NAME};
+  }
+};
+
+
+</typename>     
+     </td>
+   </tr>
+  </table>
+
+
+
+
+  <p>At first sight, the program above should print to the console <code>"foo"</code> and then <code>"bar"</code> but it doesn't. Because of C++ One Definition Rule (ODR) all these symbols are marked as weak so a single one is picked, depending on the order the linker sees them.</p>
+
+  <pre><b>$</b> clang++ -o main weak_main.cc <span class="b">c++foo.cc</span> <span class="g">c++bar.cc</span>
+<b>$</b> ./main 
+<span class="r">foo
+foo</span>
+<b>$</b> clang++ -o main weak_main.cc <span class="g">c++bar.cc</span> <span class="b">c++foo.cc</span>
+<b>$</b> ./main 
+<span class="r">bar
+bar</span>
+</pre>
+
+<p>The original illustration of this process was found <a href="https://stackoverflow.com/questions/44335046/how-does-the-linker-handle-identical-template-instantiations-across-translation"> here</a>.
+  </p>
+
+
+<h2>Relocation</h2>
+<p>The symbols list shows imports and exports names. That is enough for the linker to understand what an object provides and needs but that is not enough to relocate the relocatables. The linker needs the exact location of each symbols in an object. These are stored in relocation tables which <code>readelf</code> can show us.</p>
+
+<pre><b>$</b> readelf <span class="r">-r</span> mult.o
+
+Relocation section '.rela.text' at offset 0x1d8 contains 5 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+000000000010  000800000137 R_AARCH64_ADR_GOT 0000000000000000 myConstant + 0
+000000000014  000800000138 R_AARCH64_LD64_GO 0000000000000000 myConstant + 0
+00000000001c  000900000113 R_AARCH64_ADR_PRE 0000000000000000 myVariable + 0
+000000000020  00090000011d R_AARCH64_LDST32_ 0000000000000000 myVariable + 0
+000000000024  000a0000011b R_AARCH64_CALL26  0000000000000000 add + 0
+
+Relocation section '.rela.eh_frame' at offset 0x250 contains 1 entry:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+00000000001c  000200000105 R_AARCH64_PREL32  0000000000000000 .text + 0
+</pre>
+
+<p>Every single usage of an imported variable/function is present in the relocation table. It provides everything the linker needs like the section to patch, the offset, the type of usage, and of course the symbol name.</p>
+
+
+<h2>Mangling</h2>
+
+<p>So far we used examples using the C language which results in simple symbol names where function/variable results in a symbol of the same name. Things get more complicated when a language allows function overloading.</p>
+
+<p>
+To illustrate mangling, instead of letting the driver detect the language, we can declare it ourselves and see what happens with the symbols table.</p>
+<pre>// sample.c
+
+void foo() {};
+</pre>	
+
+<p>Let's first compile <code>sample.c</code> as a C file (with <code>-x c</code>) and then as a C++ file <code>-x c++</code>.</p>
+
+
+<pre><b>$</b> clang -c <span class="r">-x c</span> sample.c -o sample.o
+<b>$</b> nm sample.o
+0000000000000000 T <span class="r">foo</span>
+<b>$</b> clang -c <span class="r">-x c++</span> sample.c -o sample.o
+<b>$</b> nm sample.o
+0000000000000000 T <span class="r">_Z3foov</span>
+</pre>
+
+<p>Thanks to mangling, C++ allows functions to have the same name. They get different symbol names thank to the parameter types. Symbols avoid function name collision via a special encoding but name mangling can lead to linking issues.
+</p>
+<table style="width:100%;">
+	<tr>
+		<td>
+		</td>
+		<td>
+			<pre>// bar.h
+
+void bar();
+</pre>
+    </td>
+  </tr>
+
+	<tr>
+		<td>
+      <pre>// main.cpp
+#include "bar.h"
+
+int main() {
+  bar();
+  return 0;
+}
+</pre>
+    </td>
+    <td>
+      <pre>// bar.c 
+
+
+
+void bar() {};
+
+      </pre>
+    </td>
+  </tr>
+</table>
+
+<pre><b>$</b> clang main.cpp bar.c -o main <span class="r">
+/usr/bin/ld: /tmp/m-7f361c.o: in function `main':
+main.cc:(.text+0x18): undefined reference to `bar()'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)</span>
+</pre>
+
+<p>The project won't link properly because the symbols for the function <code>bar</code> do not match (<code>main.cpp</code> was mangled as C++ but <code>bar.c</code> was mangled as C).</p>
+
+<pre><b>$</b>  nm main.o
+0000000000000000 T main
+                 U <span class="r">_Z3barv</span>
+<b>$</b> nm bar.o
+0000000000000000 T <span class="r">bar</span>
+</pre>
+<p>There is a simple solution. Just use the name mangling C++ expect to name your functions and variables in your C++.</p>
+
+<table style="width:100%;">
+	<tr>
+		<td>
+		</td>
+		<td>
+			<pre>// bar.h
+
+void <span class="r">_Z3barv</span>();
+</pre>
+    </td>
+  </tr>
+
+	<tr>
+		<td>
+      <pre>// main.cpp
+#include "bar.h"
+
+int main() {
+  bar();
+  return 0;
+}
+</pre>
+    </td>
+    <td>
+      <pre>// bar.c 
+
+
+
+void <span class="r">_Z3barv</span>() {};
+
+      </pre>
+    </td>
+  </tr>
+</table>
+
+<p>It works, problem solved!</p>
+<pre><b>$</b> clang main.cpp bar.c -o main
+<b>$</b></pre>
+
+<p>A more serious and realistic solution is to use a macro to let the compiler know that it should generate import symbol names without mangling them. This is done via <code>extern "C"</code>.</p>
+
+<table style="width:100%;">
+	<tr>
+		<td>
+		</td>
+		<td>
+			<pre>// bar.h
+<span class="r">extern "C" {</span>
+void bar();
+<span class="r">}</span>
+</pre>
+    </td>
+  </tr>
+
+	<tr>
+		<td>
+      <pre>// main.cpp
+#include "bar.h"
+
+int main() {
+  bar();
+  return 0;
+}
+</pre>
+    </td>
+    <td>
+      <pre>// bar.c 
+
+
+
+void bar() {};
+
+      </pre>
+    </td>
+  </tr>
+</table>
+
+<p>Compilation works, the export/import symbol tables have no mismatch.</p>
+
+<pre><b>$</b> clang main.cpp bar.c -o main 
+<b>$</b> nm main.o
+0000000000000000 T main
+                 U <span class="r">bar</span>
+<b>$</b> nm bar.o
+0000000000000000 T <span class="r">bar</span>
+</pre>
+
+
+
+
+
+
+<h2>Section management</h2>
+<p>We have seen earlier how variables, constants, and functions end up in three sections <code>text</code>, <code>data</code>, and <code>bss</code> but the compiler can operate at a lower granularity. 
+</p>
+
+<p>Instead of generating huge sections, the compiler can generate one section per symbol. This later allows the linker to pick only what is useful and reduce the size of the executable.</p>
+
+<pre>// sections.c
+
+int a = 0;
+int b = 0;
+int funcA() { return a;}
+int funcB() { return b;}
+</pre>	
+	
+<table>
+	  
+    	
+    <tr>
+	   <td><pre><b>$</b> clang -c -o sections.o sections.c
+
+<b>$</b> readelf -S -W  sections.o
+There are <span class="r">11</span> section headers:
+
+Section Headers:
+  [Nr] Name              Type            
+  [ 0]                   NULL            
+  [ 1] .strtab           STRTAB          
+  [ 2] .text             PROGBITS        
+  [ 3] .rela.text        RELA            
+  [ 4] .bss              NOBITS          
+  [ 5] .comment          PROGBITS        
+  [ 6] .note.GNU-stack   PROGBITS        
+  [ 7] .eh_frame         PROGBITS        
+  [ 8] .rela.eh_frame    RELA            
+  [ 9] .llvm_addrsig     LOOS+0xfff4c03  
+  [10] .symtab           SYMTAB         
+
+
+
+
+    	</pre>
+    	</td>
+
+    	<td><pre><b>$</b> clang -c -o sections.o sections.c \
+  <span class="r">-ffunction-sections -fdata-sections</span>
+<b>$</b> readelf -S -W  sections.o
+There are <span class="r">15</span> section headers:
+
+Section Headers:
+  [Nr] Name              Type            
+  [ 0]                   NULL            
+  [ 1] .strtab           STRTAB          
+  [ 2] .text             PROGBITS        
+  [ 3] <span class="r">.text.funcA</span>       PROGBITS        
+  [ 4] <span class="r">.rela.text.funcA</span>  RELA            
+  [ 5] <span class="r">.text.funcB</span>       PROGBITS        
+  [ 6] <span class="r">.rela.text.funcB</span>  RELA            
+  [ 7] .bss.a            NOBITS          
+  [ 8] .bss.b            NOBITS          
+  [ 9] .comment          PROGBITS        
+  [10] .note.GNU-stack   PROGBITS        
+  [11] .eh_frame         PROGBITS        
+  [12] .rela.eh_frame    RELA            
+  [13] .llvm_addrsig     LOOS+0xfff4c03  
+  [14] .symtab           SYMTAB       
+    </pre>
+    	</td>
+    </tr>
+
+
+ </table>
+
+	<h2
+	<h2>Optimization level</h2>
+	<p>By far the most important flag to pass the compiler is the level of optimization to apply to the IR before generating the instructions. By default, no optimizations are performed. It shows, even with a program doing almost nothing.
+	</p>
+
+	<pre>// do_nothing.c
+
+void do_nothing() {
+}
+
+int main() {
+  for(int i= 0 ; i < 1000000000 i++) 
+    do_nothing();
+  return 0;  
+}
+	</pre>
+	<p>Let's build and measure how long it takes to do nothing.
+	</p>
+	<pre><b>$</b> clang do_nothing.c 
+<b>$</b> time ./a.out 
+
+<span class="r">real	0m2.374s</span>
+user	0m2.104s
+sys  	0m0.015s
+	</pre>
+	<p>This program should have completed near instantly but because of the function call overhead, it took two seconds.  Let's try again but this time, allowing optimization to occur.
+	</p>
+	<pre><b>$</b> clang do_nothing.c <span class="r">-O3</span>
+<b>$</b> time ./a.out 
+
+<span class="r">real	0m0.224s</span>
+user	0m0.011s
+sys	0m0.014s
+	</pre>
+
+<p>While some optimization focuses on runtime, others focus on code size. They are listed <a href="https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html">here</a>.
+</p>
+
+<div class="t">If you have a few hours to spare, treat yourself <a href="https://binary.ninja/">Binary Ninja</a> and take a look at the marvels optimizers come up with.
+</div>
+
+
+
+
+
+
+
+
+
+
+	<h2>The translation unit barrier</h2>
+	<p>
+	Let's keep iterating with the previous program that does nothing. Compiler optimization <code>-O3</code> is awesome but it has its limitations because it only operates at the translation unit level. Let's see what happens when the <code>do_nothing</code> function is in a different source file.
+	</p>
+
+	<table style="width:100%;table-layout:fixed">
+	  <tr>
+	  	<td>
+  		<pre>// opt_main.c
+
+extern void do_nothing();
+
+int main() {
+  for(int i= 0 ; i <1000000000 ;i++)
+    do_nothing();
+}
+
+</pre>
+	    </td>
+	    <td  style="width:45%;">
+	    	<pre>// do_nothing_tu.c
+
+void do_nothing() {
+}
+
+
+
+
+	</pre>
+	     </td>
+	   </tr>
+	 </table>
+
+	<pre><b>$</b> clang <span class="r">-O3</span> opt_main.c do_nothing_tu.c </span>
+<b>$</b> time ./a.out
+
+<span class="r">real	0m2.056s</span>
+user	0m1.824s
+sys	0m0.018s
+	</pre>
+	<p>Even with optimization enabled, we are back to the poor performance of an un-optimized executable. Due to the siloed nature of translation unit processing, the compiler could not decide whether calls to <code>do&#95;nothing</code> should be pruned and generated a callsite anyway.
+	</p> 
+	<h3>Breaking the barrier the old-school way</h3>
+	<p>
+	  The solution to this problem would be to perform optimization not at the translation unit level but at the program level. Since only the linker has a vision of all components (and it can only see sections and symbols), this is seemingly not possible.
+	</p>
+	<p>
+	 The trick to make it work is called "artisanal LTO".  It consists in creating a super translation unit, containing all the source code of the program. We can do that with the pre-processor.
+	</p>
+
+
+
+
+	<table style="width:100%;">
+	  <tr>
+	  	<td>
+	  			<pre>// all.c
+
+#include "do_nothing.c"
+#include "opt_main.c"
+
+
+
+
+</pre>
+</td>
+	  	<td>
+  		<pre>// opt_main.c
+
+extern void do_nothing();
+
+int main() {
+  for(int i= 0 ; i <1000000000 ;i++)
+    do_nothing();
+}
+</pre>
+     </td>
+	    <td  style="width:45%;">
+	    	<pre>// do_nothing.c
+
+void do_nothing() {
+}
+
+
+
+
+</pre>
+	     </td>
+	   </tr>
+	 </table>
+
+	<p>
+Now able to see that <code>do_nothing</code> is a no-op, the compiler is able to optimize it away.
+	</p>
+	<pre>$ clang all.c -O3</span>
+$ time ./a.out
+<span class="r">real  0m0.163s</span>
+user  0m0.012s
+sys 0m0.014s
+	</pre>  
+<p>Of course the bigger and complex the program, the less practical it is which led to LTO.</p>
+
+
+
+	<h2>LTO</h2>
+	<p>
+Thankfully, the "artisanal LTO" trick is no longer needed. Compilers can outputs extra information in the relocatables for the linker to use. Both <code>GNU</code>'s <code>GCC</code> and <code>LLVM</code> implement Link-Time Optimizations via <code>-flto</code> flag but they do it differently.
+	</p>
+
+	<h3>GCC's LTO</h3>
+	<p>
+	GCC compiler implements LTO in a way that lets the linker fail gracefully if it does not support it. The program will still be linked but without link-time optimizations.
+	To this effect, GCC generates fat-objects which not only contains everything an <code>.obj</code> should have but also GCC's intermediate representation (<code>GIMPLE</code> bytecode).
+	</p>
+
+	<table style="width:100%;table-layout:fixed">
+	  <tr>
+	  	<td>
+  		<pre>// opt_main.c
+
+extern void do_nothing();
+
+int main() {
+  for(int i= 0 ; i <1000000000 ;i++)
+    do_nothing();
+}
+</pre>
+	    </td>
+	    <td  style="width:45%;">
+	    	<pre>// do_nothing.c
+
+void do_nothing() {
+}
+
+
+
+	</pre>
+	     </td>
+	   </tr>
+	 </table>
+
+
+
+
+	<pre>
+<b>$</b> gcc -c main.c -o main.o
+<b>$</b> file main.o
+main.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV), not stripped
+<b>$</b> gcc  -c main.c -o main.o <span class="r">-flto</span>
+<b>$</b> file main.o
+<span class="r">main.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV), not stripped</span></pre>
+
+<pre>
+<b>$</b> gcc main.c do_nothing.c <span class="r">-flto</span>
+<b>$</b> time ./a.out
+
+real	0m2.112s
+user	0m2.107s
+sys	0m0.004s
+<b>$</b> gcc <span class="b">-O3</span> <span class="r">-flto</span> -c hello.c -o hello.o
+
+real	<span class="b">0m0.002s</span>
+user	0m0.000s
+sys	0m0.002s</pre>
+
+	<h3>LLVM's LTO</h3>
+	LLVM's way to implement LTO is a bit more aggressive. Instead of producing a fat object file, it simply pushes the IR and disguises it as an object by using a <code>.o</code> extension. This is inconvenient because if the linker does not know how to handle bitcode, the compilation process will fail.
+
+
+	<table style="width:100%;table-layout:fixed">
+	  <tr>
+	  	<td>
+  		<pre>// opt_main.c
+
+extern void do_nothing();
+
+int main() {
+  for(int i= 0 ; i <1000000000 ;i++)
+    do_nothing();
+}
+</pre>
+	    </td>
+	    <td  style="width:45%;">
+	    	<pre>// do_nothing.c
+
+void do_nothing() {
+}
+
+
+
+	</pre>
+	     </td>
+	   </tr>
+	 </table>
+
+	 <pre><b>$</b> clang -c main.c -o main.o
+<b>$</b> file main.o
+main.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV), not stripped
+<b>$</b> clang -c main.c -o main.o <span class="r">-flto</span>
+<b>$</b> file main.o
+<span class="r">hello.o: LLVM IR bitcode</span></pre>
+
+
+
+<pre>
+<b>$</b> clang main.c do_nothing.c <span class="r">-flto</span>
+<b>$</b> time ./a.out
+
+real	0m2.112s
+user	0m2.107s
+sys	0m0.004s
+<b>$</b> clang <span class="b">-O3</span> <span class="r">-flto</span> -c hello.c -o hello.o
+
+real	<span class="b">0m0.002s</span>
+user	0m0.000s
+sys	0m0.002s</pre>
+
+
+
+
+
+<h2>Dialects</h2>
+
+<h3>C++</h3>
+<p>C++ keeps on evolving. There was <code>C++98</code>, then <code>C++03</code> , then <code>C++11</code>, then <code>C++14</code>, then <code>C++17</code>, then <code>C++20</code>, and now <code>C++23</code>. The default dialect of the compiler keeps on evolving. Checkout your compiler documentation and use the flag <code>-std</code> (e.g:<code>-std=c++11</code>) to make sure you are using the proper one.
+</p>
+
+<pre>
+-std=c++11.  // clang
+-std=gnu++11 // gcc
+</pre>
+
+<h3>C</h3>
+<p>Likewise, C has been revised over the years. The standardized C from 1988 was updated by C89, C90, C95, C99, and lately C11. Flags are to be used to indicate which version is used.</p>
+
+<pre>-std=c99
+</pre>
+
+
+<h2>Standard libraries</h2>
+
+<h3>C Standard Library</h3>
+	<p>The implementations of the C Standard Library, commonly called <code>libc</code>, are fairly consistent. Switching between BSD's <code>libc</code>, GNU's <code>glibc</code>, or Android's <code>bionic</code> should not yield surprises.
+	</p>
+
+
+
+
+
+<h3>STL</h3>
+	<p>The STL is a different story. There are several implementations around and their implementations are always a source of discrepancies.
+</p>
+<p>
+	 At the very least, try to use the STL of your toolkit (GNU's <code>libstdc++</code>, LLVM's <code>libc++</code>, and <code>Microsoft STL</code>). If you are working on portable code to run on multiple OS, try to use the same STL everywhere. That means using LLVM's <code>libc++</code>. 
+</p>
+
+
+
+<div class="t">
+Operators <code>new</code>, <code>new[]</code>, <code>delete</code>, and <code>delete[]</code> are not "built-in" C++ language. They actually come from the header <code>&lt;new&gt;</code>. Furthermore, if you peek inside that header, you will see that <code>new</code> is <a href="https://github.com/llvm-mirror/libcxxabi/blob/master/src/stdlib_new_delete.cpp">implemented</a> with <code>malloc</code>.
+
+<pre>
+_LIBCXXABI_WEAK void * operator <span class="r">new</span>(std::size_t size) _THROW_BAD_ALLOC {
+
+  if (size == 0)
+      size = 1;
+
+  void* p;
+  while ((p = <span class="r">::malloc</span>(size)) == 0) {
+      std::new_handler nh = std::get_new_handler();
+      if (nh)
+          nh();
+      else
+          break;
+  }
+  return p;
+}
+</pre>
+</div>
+
+
+<h2>Debugging</h2>
+<p>For debuggers to work, you need to compile with debugging information. This is done with <code>-g</code>. Upon seeing this flag, the compiler will generate sections featuring DWARF sections (for ELF binaries, get it?).
+</p>
+
+<pre>// hello.cc
+
+#include &lt;iostream&gt;
+
+int main() {
+    std::cout << "Hello World!";
+    return 0;
+}</pre>
+
+<pre><b>$</b> clang++ hello.cc
+<b>$</b> ll a.out
+-rwxrwxr-x 1 leaf leaf  <span class="r">9576</span> Mar 22 19:14 a.out*
+<b>$</b> clang++ <span class="r">-g</span> hello.cc	
+<b>$</b> ll a.out
+-rwxrwxr-x 1 leaf leaf <span class="r">21912</span> Mar 22 19:15 a.out*
+</pre>
+
+<p>The size difference is significant but it is much more telling to compare with a real world, large application such as <code>git</code>.</p>
+
+<pre><b>$</b> sudo apt-get install dh-autoreconf libcurl4-gnutls-dev libexpat1-dev gettext libz-dev libssl-dev
+<b>$</b> sudo apt-get install install-info  
+<b>$</b> git clone git@github.com:git/git.git
+<b>$</b> cd git
+<b>$</b> make configure
+<b>$</b> ./configure --prefix=/usr
+<b>$</b> make all
+<b>$</b> ls -l --block-size=M git
+-rwxrwxr-x 137 leaf leaf <span class="r">18M</span> Apr  2 18:04 git
+</pre>
+
+<p><code>git</code>'s Makefile builds in debug mode by default. Let's remove the flag <code>-g</code> and build again to see the difference.</p>
+<pre>
+<b>$</b> git reset --hard
+<b>$</b> git clean -f -x
+<b>$</b> sed -i 's/-g //g' Makefile
+<b>$</b> make clean
+<b>$</b> make all
+<b>$</b> ls -l --block-size=M git
+-rwxrwxr-x 137 leaf leaf <span class="r">4M</span> Apr  2 18:04 git
+</pre>
+
+<p>A binary without debug information is 3x smaller (-12 MiB)!</p>
+
+<div class="t"> If you are unsure what <code>make</code> is doing, you can run it in verbose mode to see every commands it executes via parameter <code>V=1</code>.
+</div>
+
+<h2>Strip</h2>
+<p>Compiling with debug sections logically increases the size of the output. The opposite of this operation is to <code>strip</code> sections which are not useful. It can reduce further the size of an ELF file.</p>
+
+<pre><b>$</b> clang -c -g -o hello.o hello.c
+<b>$</b> ll hello.o
+-rw-rw-r-- 1 leaf leaf <span class="r">3256</span> Apr  3 01:21 hello.o
+$ readelf -S -W hello.o
+There are 22 section headers, starting at offset 0x738:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .strtab           STRTAB          0000000000000000 000611 000121 00      0   0  1
+  [ 2] .text             PROGBITS        0000000000000000 000040 000034 00  AX  0   0  4
+  [ 3] .rela.text        RELA            0000000000000000 000478 000048 18   I 21   2  8
+  [ 4] .rodata.str1.1    PROGBITS        0000000000000000 000074 00000e 01 AMS  0   0  1
+  [ 5] .debug_abbrev     PROGBITS        0000000000000000 000082 000038 00      0   0  1
+  [ 6] .debug_info       PROGBITS        0000000000000000 0000ba 000037 00      0   0  1
+  [ 7] .rela.debug_info  RELA            0000000000000000 0004c0 000060 18   I 21   6  8
+  [ 8] .debug_str_offsets PROGBITS       0000000000000000 0000f1 00001c 00      0   0  1
+  [ 9] .rela.debug_str_offsets RELA      0000000000000000 000520 000078 18   I 21   8  8
+  [10] .debug_str        PROGBITS        0000000000000000 00010d 000050 01  MS  0   0  1
+  [11] .debug_addr       PROGBITS        0000000000000000 00015d 000010 00      0   0  1
+  [12] .rela.debug_addr  RELA            0000000000000000 000598 000018 18   I 21  11  8
+  [13] .comment          PROGBITS        0000000000000000 00016d 000026 01  MS  0   0  1
+  [14] .note.GNU-stack   PROGBITS        0000000000000000 000193 000000 00      0   0  1
+  [15] .eh_frame         PROGBITS        0000000000000000 000198 000030 00   A  0   0  8
+  [16] .rela.eh_frame    RELA            0000000000000000 0005b0 000018 18   I 21  15  8
+  [17] .debug_line       PROGBITS        0000000000000000 0001c8 00005f 00      0   0  1
+  [18] .rela.debug_line  RELA            0000000000000000 0005c8 000048 18   I 21  17  8
+  [19] .debug_line_str   PROGBITS        0000000000000000 000227 000022 01  MS  0   0  1
+  [20] .llvm_addrsig     LOOS+0xfff4c03  0000000000000000 000610 000001 00   E 21   0  1
+  [21] .symtab           SYMTAB          0000000000000000 000250 000228 18      1  21  8
+</pre>
+
+<p>Now let's strip the object.</p>
+
+<pre><b>$</b> strip hello.o
+<b>$</b> ll hello.o
+-rw-rw-r-- 1 leaf leaf <span class="r">816</span> Apr  3 01:22 hello.o
+<b>$</b> readelf -S -W hello.o
+There are 8 section headers, starting at offset 0x130:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .text             PROGBITS        0000000000000000 000040 000034 00  AX  0   0  4
+  [ 2] .rodata.str1.1    PROGBITS        0000000000000000 000074 00000e 01 AMS  0   0  1
+  [ 3] .comment          PROGBITS        0000000000000000 000082 000026 01  MS  0   0  1
+  [ 4] .note.GNU-stack   PROGBITS        0000000000000000 0000a8 000000 00      0   0  1
+  [ 5] .eh_frame         PROGBITS        0000000000000000 0000a8 000030 00   A  0   0  8
+  [ 6] .llvm_addrsig     LOOS+0xfff4c03  0000000000000000 0000d8 000001 00   E  0   0  1
+  [ 7] .shstrtab         STRTAB          0000000000000000 0000d9 000051 00      0   0  1
+</pre>
+
+<p>Note that in this example, we used <code>strip</code> on an object file but since it works on ELF, it can be (and usually is) used on the linker output.</p>
+
+
+<!-- BREAK -->
+
+<h1 style="margin-bottom: 0.5ch;">The Linker (4/5)</h1>
+<hr/>
+
+<div style="width:30%;float: right; margin-left: 2ch; margin-bottom: 2ch;">
+<table class="lined" style="width: 100%; text-align: center; margin-top: 0;">
+	<tr>
+		<td colspan="3">driver
+		</td><td style="border-top-style: hidden; border-right-style: hidden;"></td>
+	</tr>
+
+	<tr>
+		<td>cpp</td>
+		<td>cc</td>
+		<td>ld<span class="r">*</span></td>
+		<td>loader</td>
+	</tr>
+</table>
+</div>
+
+<p style="margin-top: 0;">
+
+The goal of the linker is to merge all relocatable sections together and create something the OS loader can load for execution. Since we are going to talk about it a lot on this page, let's clarify what relocation means, by quoting <code>elf(5)</code>.</p>
+
+<pre>Relocation is the process of connecting symbolic references with symbolic definitions. 
+Relocatable files must have information that describes how to modify their section
+contents, thus allowing executable and shared object files to hold the right
+information for a processes' program image. Relocation entries are these data.
+
+                                                                           - elf(5)
+</pre>
+
+<p>
+ The linker starts by picking sections in the relocatable(s) generated by the compiler and merges them together. Along the way, it patches in missing symbols from static libraries and emits relocation information for symbols imported from dynamic libraries.</p>
+
+<img src="illu/ld.svg" width=100% height=300 />
+
+<div class="t" style="margin-top:2ch;"> As the drawing above shows, a static library <code>.a</code> is nothing else but a collection of relocatable <code>.o</code>. It is built using <code>ar</code> (for <b>ar</b>chiver) command.
+<pre><b>$</b> clang -c x.c y.c
+<b>$</b> <span class="r">ar</span> -rv foolib.a x.o y.o
+</pre>
+<p>If you ever build a static library, don't forget to run <code>ranlib</code> on it. It builds an index which speeds up linking.
+</div>
+
+<p>Again, this article is only a high-level overview. If you want to deepen your knowledge of linkers, an excellent book on the topic is <a href="https://amzn.to/3z0ArWr">Linkers and Loaders</a> by John R. Levine.
+
+
+
+
+
+<h2>Output format</h2>
+<p>On Linux the output format is an ELF file (the same as the input). However using <code>readelf</code> we can see that whereas compiler outputs only featured sections, linker outputs also feature segments. Segments are used to point and group sections together.  These two views are called Linking View (sections) and Execution View (segments).</p>
+
+<img style="border:none;" width=100% src="illu/elf.svg"/>
+
+
+<p>Let's compile <code>hello.c</code> and peek inside <code>hello.o</code>. </p>
+
+<pre>// hello.c
+
+#include &lt;stdio.h&gt;
+
+int main() {
+   printf("Hello, World!");
+   return 0;
+}
+</pre>
+
+<p>Flag <code>-l</code> in <code>readelf</code> requests to show the segment (a.k.a "program headers") instead of the sections.</p>
+
+<pre>
+<b>$</b> clang -v hello.c
+clang -cc1 -o <span class="b">/tmp/hello-9c2163.o</span> hello.c
+<span class="r">/usr/bin/ld</span> -o a.out  <span class="b">/tmp/hello-9c2163.o</span> /lib/crti.o -L/lib -lc -lgcc 
+<b>$</b> file a.out 
+a.out: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), interpreter /lib/ld-linux-aarch64.so.1
+<b>$</b> readelf <span class="r">-l</span> -W a.out
+
+Elf file type is DYN (Position-Independent Executable file)
+Entry point 0x8c0
+There are 9 <span class="r">program headers</span>, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x0001f8 0x0001f8 R   0x8
+  INTERP         0x000238 0x0000000000000238 0x0000000000000238 0x00001b 0x00001b R   0x1
+      [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x0008ac 0x0008ac R E 0x10000
+  LOAD           0x000dc8 0x0000000000010dc8 0x0000000000010dc8 0x000270 0x000278 RW  0x10000
+  DYNAMIC        0x000dd8 0x0000000000010dd8 0x0000000000010dd8 0x0001e0 0x0001e0 RW  0x8
+  NOTE           0x000254 0x0000000000000254 0x0000000000000254 0x000044 0x000044 R   0x4
+  GNU_EH_FRAME   0x0007b0 0x00000000000007b0 0x00000000000007b0 0x00003c 0x00003c R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x000dc8 0x0000000000010dc8 0x0000000000010dc8 0x000238 0x000238 R   0x1
+
+ <span class="r">Section to Segment mapping:</span>
+  Segment Sections...
+   00     
+   01   .interp 
+   02   .interp .gnu.hash .dynsym .dynstr rela.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame 
+   03   .init_array .fini_array .dynamic .got .got.plt .data .bss 
+   04   .dynamic 
+   05   .note.gnu.build-id .note.ABI-tag 
+   06   .eh_frame_hdr 
+   07     
+   08   .init_array .fini_array .dynamic .got 
+
+</pre>	
+
+<p>The program headers instruct where group of sections are in the ELF file (<code>PhysAddr</code>) and where they should be mapped in virtual memory (<code>VirtAddr</code>) by the loader.
+</p>
+
+
+
+
+<h2>Linker(s)</h2>
+<p>As the verbose trace above shows, <code>clang</code> driver invoked itself to compile the source file and then called <code>/usr/bin/ld</code> to link an executable. 
+</p>
+
+<p>There are many linkers available on Linux. The first one available on the platform was GNU's, commonly called <code>ld</code>. Later came <code>gold</code> which was built to improve speed. LLVM also released their own linker called <code>lld</code>.
+The path <code>/usr/bin/ld</code> is not enough to tell which one it is. But we can dig a little bit.
+</p>
+
+
+</p>
+
+<pre><b>$</b> ll /usr/bin/ld
+lrwxrwxrwx 1 root root 20 Nov  2 13:58 /usr/bin/ld -> aarch64-linux-gnu-ld*
+<b>$</b> /usb/bin/ld --version
+GNU ld (GNU Binutils for Ubuntu) 2.38
+</pre>
+
+
+<h2>The linker bottleneck</h2>
+<p>The linking stage is a bottleneck in the compilation pipeline. Contrary to the compiler which can be run in parallel on each translation unit and whose outputs can be cached between runs, the linker must wait until all object files are ready to start linking.</p>
+
+
+<img src="illu/multi_driver.svg" loading=lazy width="208" height="108" style="width:100%; height: auto;"/>
+
+<p>As a result, significant optimization have targeted the linker. Efforts such as <cpde>gold</cpde> or Apple's <a href="https://developer.apple.com/videos/play/wwdc2022/110362/">WC2022</a>  multi-threaded work are among many.</p>
+
+
+<h2>Incremental linking</h2>
+
+<p>The most important optimization is called "Incremental Linking". It consists in re-using work done during the previous linking operation. Few linkers can do it. GNU's <code>ld</code>, LLVM's <code>lld</code>, and Apple's <code>ld64</code> can't do it.
+</p>
+<p>
+<code>gold</code> can do it, but only if you pass a special linker flag, which typical build systems don't. Microsoft's <code>LD.EXE</code> can also do it when given a special flag <code>/INCREMENTAL</code>.</p>
+
+
+	<h2>How the linker find resources</h2>
+	Alike the Preprocessor, the linker does not ship with a hard-coded list of location and libraries path to lookup. These are supplied, respectively via <code>-L</code> and <code>-l</code>, by the driver.
+	</p>
+	<pre><b>$</b> clang -v hello.c
+clang -cc1 -o /tmp/hello-9a2af8.o  hello.c
+ld  -o a.out \  <span class="r">
+-L/usr/lib/gcc/aarch64-linux-gnu/11 \
+-L/lib/aarch64-linux-gnu \
+-L/usr/lib/aarch64-linux-gnu \
+-L/usr/lib/llvm-14/lib \
+-L/lib \
+-L/usr/lib \</span>
+\  <span class="b">
+-lgcc \
+-lgcc_s \ 
+-lc </span>\
+\  <span class="g">
+/usr/lib/gcc/aarch64-linux-gnu/11/crtendS.o 
+/lib/aarch64-linux-gnu/crtn.o 
+/tmp/hello-9a2af8.o  </span>
+	</pre>	
+
+<p>In the trace above, the linker is provided with six folders in red, three dynamic libraries in blue, and must link together the objects passed extra parameters in green.</p>
+
+<div class="t"> The name of a library is prefixed with <code>lib</code> and suffixed with the dynamic library extension (on Linux <code>.so</code>) when looked up on the filesystem. Therefore you won't find a file at <code>/lib/aarch64-linux-gnu/c</code> but you will find <code>/lib/aarch64-linux-gnu/<span class="r">lib</span>c<span class="r">.so</span></code>.</div>
+
+<div class="t"> If you peek inside <code>libc.so</code>, you will find out that it is not an ELF file. It is an ASCII text file.
+<pre><b>$</b> file /lib/aarch64-linux-gnu/libc.so
+/lib/aarch64-linux-gnu/libc.so: ASCII text
+</pre>
+<p>This text file is a linker script which points to <code>/lib/aarch64-linux-gnu/libc.so.6</code>.
+</div>
+
+
+<h2>Linking libraries</h2>
+<p>There are two types of library linking, named static and dynamic. As we saw earlier, a static library is nothing but a collection of object files packaged in a <code>.a</code> archive. These objects are included in the final binary.</p>
+
+<p>Linking against a dynamic library is different. The linker looks up the dynamic library symbols but does not pull them into the final binary. Instead it emits a special section <code>dynsym</code> which lists the name of symbols to be found at runtime, along with a list of dynamic library names where they may be in section <code>.dynamic</code>. We can see the dynamic library an executable needs with either <code>readelf</code> or <code>ldd</code>
+
+<pre><b>$</b> clang -o hello hello.c
+<b>$</b> readelf -d hello| grep NEEDED
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+<b>$</b> ldd hello
+	linux-vdso.so.1 (0x0000ffff85df9000)
+	libc.so.6 => <span class="b">/lib/aarch64-linux-gnu/libc.so.6</span> (0x0000ffff85bd0000)
+	/lib/ld-linux-aarch64.so.1 (0x0000ffff85dc0000)	
+</pre>
+
+<p>Notice the output of <code>ldd</code> resolves where the library are on the system. It also includes the interpreter path, we will get to this in the next chapter.
+</p>
+
+
+<p>Using <code>readelf</code>, we can see how the imported symbols are suffixed with the name of the dynamic library. The matching library also feature the same suffix in its exported symbols. If the dynamic library has a version, this is also where it is featured (e.g: <b>GLIBC_2.17</b> here).</p>
+
+
+<pre><b>$</b> readelf -s hello
+
+Symbol table '<span class="g">.dynsym</span>' contains 10 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 00000000000005b8     0 SECTION LOCAL  DEFAULT   11 .init
+     2: 0000000000011028     0 SECTION LOCAL  DEFAULT   23 .data
+     3: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND _[...]@GLIBC_2.34 (2)
+     4: 0000000000000000     0 NOTYPE  WEAK   DEFAULT  UND _ITM_deregisterT[...]
+     5: 0000000000000000     0 FUNC    WEAK   DEFAULT  UND _[...]@GLIBC_2.17 (3)
+     6: 0000000000000000     0 NOTYPE  WEAK   DEFAULT  UND __gmon_start__
+     7: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND abort@GLIBC_2.17 (3)
+     8: 0000000000000000     0 NOTYPE  WEAK   DEFAULT  UND _ITM_registerTMC[...]
+     9: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND <span class="r">printf</span>@GLIBC_2.17 (3)
+ </pre>
+
+
+<pre><b>$</b> readelf -s <span class="b">/lib/aarch64-linux-gnu/libc.so.6</span> | grep printf
+
+Symbol table '<span class="g">.symtab</span>' contains 90 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+    60: 000000000006cfe0   168 FUNC    GLOBAL DEFAULT   12 swprintf@@GLIBC_2.17
+   259: 000000000006d090    56 FUNC    GLOBAL DEFAULT   12 vwprintf@@GLIBC_2.17
+   437: 0000000000072184    40 FUNC    WEAK   DEFAULT   12 vasprintf@@GLIBC_2.17
+   578: 0000000000050cb0   168 FUNC    GLOBAL DEFAULT   12 dprintf@@GLIBC_2.17
+   761: 0000000000050920   168 FUNC    GLOBAL DEFAULT   12 fprintf@@GLIBC_2.17
+  1137: 0000000000050d60    40 FUNC    WEAK   DEFAULT   12 vfwprintf@@GLIBC_2.17
+  1188: 0000000000050c00   168 FUNC    WEAK   DEFAULT   12 asprintf@@GLIBC_2.17
+  1302: 0000000000072530    40 FUNC    WEAK   DEFAULT   12 vsnprintf@@GLIBC_2.17
+  1401: 0000000000072350    40 FUNC    WEAK   DEFAULT   12 vdprintf@@GLIBC_2.17
+  1561: 000000000004be40    40 FUNC    GLOBAL DEFAULT   12 vfprintf@@GLIBC_2.17
+  1911: 0000000000050b40   180 FUNC    GLOBAL DEFAULT   12 sprintf@@GLIBC_2.17
+  1930: 000000000006cf30   168 FUNC    WEAK   DEFAULT   12 fwprintf@@GLIBC_2.17
+  2123: 0000000000050a90   168 FUNC    WEAK   DEFAULT   12 snprintf@@GLIBC_2.17
+  2146: 000000000006d4c0    40 FUNC    WEAK   DEFAULT   12 vswprintf@@GLIBC_2.17
+  2229: 000000000004be70    56 FUNC    GLOBAL DEFAULT   12 vprintf@@GLIBC_2.17
+  2315: 000000000006d0d0   188 FUNC    GLOBAL DEFAULT   12 wprintf@@GLIBC_2.17
+  2837: 000000000006ba70   204 FUNC    WEAK   DEFAULT   12 vsprintf@@GLIBC_2.17
+  2841: 00000000000509d0   188 FUNC    GLOBAL DEFAULT   12 <span class="r">printf</span>@@GLIBC_2.17
+</pre>
+
+<p>Notice the <code>WEAK</code> binding of some symbols which we discussed earlier.
+</p>
+
+
+<h2>Library order in static linking</h2>
+<p>While we are on the topic of linker symbol resolution, you should *really* take a few minutes to read Eli Bendersky's <a href="https://eli.thegreenplace.net/2013/07/09/library-order-in-static-linking">explanation</a> of linking order in static libraries. In fact, his whole website is a gem which partially inspired this series.</p>
+
+
+
+<h2>_start</h2>
+<p>What happens if the function where the program starts, <code>main</code>, is mistakenly named <code>maib</code>.</p>
+
+<pre>// hello.c
+
+#include &lt;stdio.h&gt;
+
+int mai<span class="r">b</span>() {
+  printf("Hello, World!");
+  return 0;
+}
+</pre>
+
+<p>Let's try to compile it.</p>
+
+<pre><code>$</code> clang mainb.c
+/usr/bin/ld: /lib/aarch64-linux-gnu/Scrt1.o: in function `_start':
+<span class="r">(.text+0x1c): undefined reference to `main'</span>
+/usr/bin/ld: (.text+0x20): undefined reference to `main'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+</pre>
+
+<p>The linking fails because a mysterious object <code>Scrt1.o</code> features a function <code>_start</code> which calls <code>main</code>. That's because the execution of a program does not really begin at <code>main</code>. There are many things to set up before a program can run, among other things the stack must be initialized and the program arguments prepared.</p>
+
+
+<p>In our example the piece of assembly in charge of initialization is called <code>Scrt1.s</code>. Only when everything is ready, the function  <code>__start</code> calls <code>main</code>,
+
+
+<code>Scrt1.s</code> can also sometimes be found named <code>ctr0</code>. In both cases, the name is derived from <b>C</b> <b>R</b>un<b>T</b>ime.</p>
+
+
+<p>Likewise, a program execution does not end after <code>main</code> returns. It is easy to verify using <code>atexit</code> function which is executed by the C runtime after main returns.</p>
+
+
+<pre>// atexit.c
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+void bye(void) {
+  puts(<span class="b">"Goodbye, cruel world...."</span>);
+}
+
+int main(void) { 
+  atexit(bye);
+  puts(<span class="r">"This is the last function call"</span>);
+  return 0;
+}
+</pre>
+
+
+
+<p>Let's see the outputs
+</p>
+
+<pre><b>$</b> clang atexit.c
+<b>$</b> ./a.out
+<span class="r">This is the last function call</span>
+<span class="b">Goodbye, cruel world....</span></pre>
+
+<p>If you feel like going even deeper on the topic of C runtime, make sure to read 
+the <a href="http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html">Tutorial on Creating Teensy ELF Executables</a>.
+</p>
+
+
+
+
+<h2>Common error, when mixing static and dynamic libraries</h2>
+<p>Let's say we have a project with three source files. One of them hold a "singleton" <code>char</code> variable named <code>c</code>.</p>
+
+<table>
+  <tr>
+    <td>
+<pre> // main.c
+	
+#include "stdio.h"	
+
+
+
+char getChar();
+
+
+
+void setChar(char ch);
+
+
+int main() {
+  setChar(<span class="r">'a'</span>);
+  putc(getChar())
+}
+</pre>
+    </td>
+    <td>
+<pre>// static.c 
+
+
+
+char c = <span class="r">'b'</span>;
+
+char getChar() {
+  return c;
+}
+
+
+
+
+
+
+
+
+</pre>    	
+    </td>
+    <td>
+<pre>// dynamic.c
+	
+
+
+extern char c;
+
+
+
+
+
+void setChar(char ch) {
+  c = ch;
+}
+
+
+
+
+</pre>    	
+    </td>
+  </tr>
+</table>
+
+<p>
+ We build the project as an object, a static library, and a dynamic library.
+</p>
+
+<pre><b>$</b> clang -o static.o -c                        <span class="r">static.c</span>
+<b>$</b> ar rcs libmyStatic.a static.o
+<b>$</b> clang -o libmyShared.so -shared  -lmyStatic <span class="r">dynamic.c</span>
+<b>$</b> clang -o main -lmyShared -lmyStatic         <span class="r">main.c</span>
+</pre>
+
+<p>The dependency graph looks as follows.</p>
+
+<img style="width:100%; border:0;" src="illu/singleton_error.svg" />
+
+<p>What is the program going to display when it runs? Will it be <code>a</code>, <code>b</code>, or <code>42</code>?</p>
+
+<pre><b>$</b> ./main.c
+<span class="r">b</span>	
+</pre>
+
+<p><code>main</code> calls <code>setChar</code> to set the value of <code>c</code> to 'a' and then prints this very variable it just set. The output expected is therefore 'a'. But when we run, we see 'b' being printed.</p>
+
+<p> This happened because the static library was linked twice. There are two copies of the variables <code>c</code> in the final program. One that is read by <code>getChar()</code> and another one which is written by <code>setChar</code>. As much as possible if you are designing a complex project, try to stick to static libraries.</p>
+
+<h3>Common error, the dreaded "duplicate symbol"</h3>
+
+<p>Some error originate at the compiler level but surface at the linker level. This is the case for the beginners' dreaded "duplicate symbol" (a.k.a LNK4002 in the Windows/Visual Studio world). Here is a mini-project to show the problem.</p>
+
+<table>
+<tr>
+<td>
+<pre>// counter.h
+
+#pragma once
+
+<span class="r">int counter = 0;</span>
+int incCounter();
+</pre>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<pre>// counter.c
+
+
+#include "counter.h"
+
+void incCounter() {
+  counter++;  
+}
+
+</pre>
+
+
+</td>
+<td>
+<pre>// main.c
+
+#include &lt;stdio.h&gt;
+#include "counter.h"  
+
+int main() {
+  incCounter();
+  printf("%d\n", counter);
+}
+</pre>
+</td>
+</tr>
+</table>
+
+<p>This is a simple program with a main part and a counter part. It fails to compile.
+</p>
+
+<pre>$ clang counter.c main.c<span class="r">
+1 warning generated.
+duplicate symbol '_counter' in:
+    /var/folders/sp/tmp/T/counter-c84ff0.o
+    /var/folders/sp/tmp/T/cmain-3e41f8.o
+ld: 1 duplicate symbol for architecture x86_64</span></pre>
+
+<p>Let's inspect what is going on. First at the translation unit level and then at the symbol level.</p>
+
+
+
+<table>
+  <tr>
+<td>
+<pre><b>$</b> clang -E -o counter.tu counter.c
+<b>$</b> cat counter.tu
+
+<span class=r>int counter = 0;</span>
+int incCounter();
+
+int incCounter() {
+  counter++;
+}
+</pre>
+
+</td>
+<td>
+<pre><b>$</b> clang -E -o main.tu main.c
+<b>$</b> cat main.tu
+
+<span class=r>int counter = 0;</span>
+int incCounter();
+
+int main() {
+  printf("%d\n", counter);
+}
+</pre>
+</td>
+</tr>
+</table>
+
+<p>Let's look at the symbols now.</p>
+<table>
+  <tr>
+<td>
+<pre><b>$</b> clang -c -o counter.o counter.c
+<b>$</b> nm counter.o
+0000000000000000 B <span class=r>counter</span>
+0000000000000000 T incCounter
+
+</pre>
+
+</td>
+<td>
+<pre><b>$</b> clang -c -o main.o main.c
+<b>$</b> nm main.o
+0000000000000000 B <span class=r>counter</span>
+0000000000000000 T main
+                 U printf
+</pre>
+</td>
+</tr>
+</table>
+
+
+
+<p>Due to the siloed nature of the translation unit, the compiler will happily produce object files, only for the linker to scream bloody murder when it finds duplicate symbols (like in our example <code>counter</code>) without a way to know which one to use.</p>
+
+  <p> Avoid these kinds of errors by never defining anything in a header. Headers should only contain declarations, and only expose the strict minimum. If you need to share a storage symbol, use <code>extern</code>.
+</p>
+
+
+<h2>Linker trust</h2>
+<p>There is a certain level of thrust when the linker combines object files. For example there is no verification that imported and exported symbol types match.</p>
+
+
+<table>
+  <tr>
+<td>
+<pre>// trick.c
+
+#include &lt;stdio.h&gt;
+
+extern <span class=r>short</span> i;
+
+int main() {
+  printf("i=%d\n", i);
+  return 0;
+}
+
+</pre>
+
+</td>
+<td>
+<pre> // i.c
+
+
+
+const <span class=r>char*</span> i = "a string!";
+
+
+
+
+
+
+</pre>
+</td>
+</tr>
+</table>
+
+<p>The defined type and the declared type of <code>i</code> did not match but the linker happilly combined the object files.</p>
+
+<pre><b>$</b> clang trick.c i.c
+<b>$</b> ./a.out
+<span class=r>2034</span>
+</pre>
+
+
+<h2>Section pruning</h2>
+<p>In the compiler page, the "Section Management" part mentioned how to create one section per symbol. This is usually used in conjunction with linker flags to bring in the final product only what is needed. This is achievable by providing the compiler driver with flags for the linker.</p>
+
+<pre><b>$</b> clang -v -ffunction-sections -fdata-sections <span class=r>-Wl,--gc-sections</span> <span class=b>-Wl,--as-needed</span> main
+clang -cc1 -o /tmp/main-476f21.o -x c main.c
+ld  <span class=r>--gc-sections</span> <span class=b>--as-needed</span> /tmp/main-476f21.o
+</pre>
+
+<p>The executable size reduction will vary depending on the project and translation units structures. </p>
+<pre><b>$</b> clang -v -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--as-needed main
+<b>$</b> ll a.out
+-rwxrwxr-x 1 leaf leaf <span class=r>8840</span> Apr  4 22:53 a.out*
+<b>$</b> clang  main.c
+<b>$</b> ll a.out
+-rwxrwxr-x 1 leaf leaf <span class=r>9064</span> Apr  4 22:56 a.out*
+</pre>
+
+<div class="t"> To help keep binary size low, libc implementations usually use one source file per function. See for example Bionic's <a href="https://android.googlesource.com/platform/bionic/+/refs/heads/master/libc/bionic/">source code</a>.</div>
+
+
+<h2>Linker script</h2>
+<p>The output of the linker is configured by a linker script. It is a powerful mechanism allowing among other things to tell where each section should go in the output file and where they should be mapped in memory by the loader.</p>
+
+<p>Linkers such as <code>ld</code> have default script (visible with the command <code>ld --verbose</code>) and users don't have to worry about it. Using custom scripts is mandatory for toolchains targeting machines with exotic memory mapping.</p>
+
+<p> Let's take the example of <code>ccps</code>, a toolchain to compile for Capcom CPS-1 (arcade machines of the early 90s). The (partial) memory mapping expected by the hardware is as follows.</p>
+
+<table class="lined">
+			<tr>
+				<th>Address</th>
+				<th>Purpose</th>
+			</tr>
+			<tr>
+				<td>0x000000-0x3FFFFF</td>
+				<td>ROM</td>
+			</tr>
+			<tr>
+				<td>0x900000-0x92FFFF</td>
+				<td>GFXRAM</td>
+			</tr>
+			
+			<tr>
+				<td>0xFF0000-0xFFFFFF</td>
+				<td>RAM</td>
+			</tr>
+			
+	    </table>
+
+<p><code>ccps</code> achieves this mapping with the following </code> <a href="https://github.com/fabiensanglard/ccps/blob/master/m68k/cps1.lk">linker script</a>.</p>
+
+		<pre>// cps1 Linker Script
+
+OUTPUT_FORMAT("binary")
+OUTPUT_ARCH(m68k)
+ENTRY(_start)
+
+MEMORY
+{
+  <span class=r>rom </span>(rx)    : ORIGIN = 0x000000, LENGTH = 0x200000
+  <span class=g>gfx_ram</span>(rw) : ORIGIN = 0x900000, LENGTH = 0x2FFFF
+  <span class=b>ram</span>(rw)    : ORIGIN = 0xFF0000, LENGTH = 0xFFFF
+}
+</pre>
+<p>First three memory regions are created, with offset and size. Then sections are mapped to memory regions.
+
+<pre>	
+SECTIONS {
+  .text : {
+    *(.text)
+    *(.text.*)
+    . = ALIGN(4);
+  } > <span class=r>rom</span>
+
+  .rodata : {
+    *(.rodata)
+    *(.rodata.*)
+    . = ALIGN(4);
+  } > <span class=r>rom</span>
+
+  .gfx_data : {
+  } > <span class=g>gfx_ram</span>
+
+  .bss : {
+    __bss_start = .;
+    *(.bss)
+    *(.bss.*)
+    _end = .;
+    . = ALIGN(4);
+  } > <span class=b>ram</span>
+
+  .data : {
+    *(.data)
+    *(.data.*)
+    . = ALIGN(4);
+  } > <span class=b>ram</span>
+}		
+		</pre>
+
+<div class="t"> Ngdevkit toolchain targets the Neo-Geo arcade machine. It is much more <a href="https://github.com/dciabrin/ngdevkit/blob/d4077868bf9b5708db2af800d293560f7dd45935/runtime/ngdevkit.ld">elaborated</a>.</div>
+
+<!-- BREAK -->
+
+	<h1>The Loader (5/5)</h1>
+	<hr/>
+
+  <div style="width:30%;float: right; margin-left: 2ch; margin-bottom: 2ch;">
+<table class="lined" style="width: 100%; text-align: center; margin-top: 0;">
+  <tr>
+   <td colspan="4">driver
+    </td><td style="border-top-style: hidden; border-right-style: hidden;"></td>
+  </tr>
+
+  <tr>
+    <td>cpp</td>
+    <td>cc</td>
+    <td>ld</td>
+    <td>exec</td>
+    <td>loader<span class="r">*</span></td>
+  </tr>
+</table>
+</div>
+
+	
+	<p>This is beyond what a programmer needs to know but it can come handy to have a rough idea of how a program runs. This is what this page is for.
+	</p>
+	<p>
+		The output of the linker is meant to be loaded by the OS loader when the program starts. The loader maps segments to memory, loads dynamic dependencies, resolves dynamic symbols, and points the CPU to the <code>_start</code> symbol.</p>
+
+<h2>Finding the loader</h2>
+<p>Linux finds the loader (a.k.a interpreter) by fetching the value in section <code>.interp</code>. It can be displayed using <code>file</code>.
+</p>
+<pre><b>$</b> file a.out
+a.out: ELF 64-bit LSB pie executable, ARM aarch64, dynamically linked, interpreter <span class=r>/lib/ld-linux-aarch64.so.1</span></pre>
+
+
+
+
+
+
+
+
+
+
+
+	<h2>Mapping segments to memory</h2>
+	<p>The interpreter looks at the segments and simply follows instructions.</p>
+
+	<pre>$ readelf -l -W a.out
+
+Elf file type is DYN (Position-Independent Executable file)
+Entry point 0x600
+There are 9 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x0001f8 0x0001f8 R   0x8
+  INTERP         0x000238 0x0000000000000238 0x0000000000000238 0x00001b 0x00001b R   0x1
+      [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x0008c4 0x0008c4 R E 0x10000
+  LOAD           0x000dc8 0x0000000000010dc8 0x0000000000010dc8 0x000268 0x000270 RW  0x10000
+  DYNAMIC        0x000dd8 0x0000000000010dd8 0x0000000000010dd8 0x0001e0 0x0001e0 RW  0x8
+  NOTE           0x000254 0x0000000000000254 0x0000000000000254 0x000044 0x000044 R   0x4
+  GNU_EH_FRAME   0x000794 0x0000000000000794 0x0000000000000794 0x00004c 0x00004c R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x000dc8 0x0000000000010dc8 0x0000000000010dc8 0x000238 0x000238 R   0x1
+
+</pre>
+
+<p><code>LOAD</code> segments are mmaped to memory. The instructions in section <code>.text</code> and read-only data in section <code>.rodata</code> are grouped in the same segment to minimize the number of calls to <code>mmap</code>. This segment is loaded in <code>R_E</code> (Readable, Executable) memory. The second <code>LOAD</code> segment in our example contains mutable variables, and therefore has flag <code>RW_</code>.
+	</p>
+	<p>Notice how debug segments are not marked as <code>LOAD</code>, they are consulted on a needed basis. The <code>DYNAMIC</code> segment contains the information to load dynamic libraries and relocate symbols.</p>
+
+
+
+
+
+
+
+
+
+
+
+	<h2>Dynamic libraries loading</h2>
+	<p>The list of undefined symbols, expected to be found in dynamic libraries, can be examined with <code>nm</code>.
+	</p>
+
+	<pre><b>$</b> nm a.out
+                 U abort@GLIBC_2.17
+                 U __libc_start_main@GLIBC_2.34
+0000000000000754 T main
+                 U printf@GLIBC_2.17
+0000000000000640 T _start
+</pre>
+
+	<p>
+The list of dynamic libraries where these undefined symbols will be searched can be obtained via <code>ldd</code>.
+	</p>
+	
+
+
+	<pre><b>$</b> ldd a.out
+	linux-vdso.so.1 (0x0000ffff8de9b000)
+	libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffff8dc70000)
+	/lib/ld-linux-aarch64.so.1 (0x0000ffff8de62000)</pre>
+
+<p>An alternative way, more concise, it to look at the dynamic section and keep only <code>NEEDED</code> entries.</p>
+
+
+<pre><b>$</b> readelf -d a.out | grep 'NEEDED'
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+	</pre>
+
+
+<div class="t"> The interpreter used to load an <code>.so</code> is not necessarily the same as the one used to load the "main" program. All <code>.so</code> have a hard-coded interpreter path.
+</div>
+
+
+<h2>Symbols relocation</h2>
+<p>When everything is properly mapped to memory, the loader performs symbol relocation. This is something we already looked at in the linker when this data was being generated. We can recognize here the name of the undefined symbols <code>nm</code> revealed to us.</p>
+
+<pre><b>$</b> readelf -r a.out
+
+Relocation section '.rela.dyn' at offset 0x480 contains 8 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+000000010dc8  000000000403 R_AARCH64_RELATIV                    750
+000000010dd0  000000000403 R_AARCH64_RELATIV                    700
+000000010fd8  000000000403 R_AARCH64_RELATIV                    754
+000000011030  000000000403 R_AARCH64_RELATIV                    11030
+000000010fc0  000400000401 R_AARCH64_GLOB_DA 0000000000000000 _ITM_deregisterTM[...] + 0
+000000010fc8  000500000401 R_AARCH64_GLOB_DA 0000000000000000 __cxa_finalize@GLIBC_2.17 + 0
+000000010fd0  000600000401 R_AARCH64_GLOB_DA 0000000000000000 __gmon_start__ + 0
+000000010fe0  000800000401 R_AARCH64_GLOB_DA 0000000000000000 _ITM_registerTMCl[...] + 0
+
+Relocation section '.rela.plt' at offset 0x540 contains 5 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+000000011000  000300000402 R_AARCH64_JUMP_SL 0000000000000000 <span class="r">__libc_start_main@GLIBC_2.34</span> + 0
+000000011008  000500000402 R_AARCH64_JUMP_SL 0000000000000000 __cxa_finalize@GLIBC_2.17 + 0
+000000011010  000600000402 R_AARCH64_JUMP_SL 0000000000000000 __gmon_start__ + 0
+000000011018  000700000402 R_AARCH64_JUMP_SL 0000000000000000 <span class="r">abort@GLIBC_2.17</span> + 0
+000000011020  000900000402 R_AARCH64_JUMP_SL 0000000000000000 <span class="r">printf@GLIBC_2.17</span> + 0
+</pre>
+
+
+
+<h2>Branching the CPU</h2>
+<p>Finally, everything is ready to run. The interpreter only needs to point the processor to the start of the program. The virtual address to use comes from the ELF header.</p>
+<pre><b>$</b> readelf -h a.out
+ELF Header:
+  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 
+  Class:                             ELF64
+  Data:                              2's complement, little endian
+  Version:                           1 (current)
+  OS/ABI:                            UNIX - System V
+  ABI Version:                       0
+  Type:                              DYN (Position-Independent Executable file)
+  Machine:                           AArch64
+  Version:                           0x1
+  <span class="r">Entry point address:               0x640</span>
+  Start of program headers:          64 (bytes into file)
+  Start of section headers:          8072 (bytes into file)
+  Flags:                             0x0
+  Size of this header:               64 (bytes)
+  Size of program headers:           56 (bytes)
+  Number of program headers:         9
+  Size of section headers:           64 (bytes)
+  Number of section headers:         36
+  Section header string table index: 35
+
+</pre>
+
+<p>And that's it for now :) !</p>
+
+
+<hr/>
+ <center>*</center>
+
+</body>
+</html>
